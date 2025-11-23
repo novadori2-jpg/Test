@@ -8,154 +8,225 @@ import statsmodels.api as sm
 # -----------------------------------------------------------------------------
 # [공통] 페이지 설정
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="생태독성 통합 분석기", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="생태독성 통합 분석기 (Pro)", page_icon="🧬", layout="wide")
 
-st.title("🧬 생태독성 통합 분석 어플리케이션")
+st.title("🧬 생태독성 통합 분석 어플리케이션 (Pro)")
 st.markdown("""
-이 앱은 다음 세 가지 실험에 대한 통계 분석을 지원합니다:
-1. **조류 (Algae):** 성장저해 시험 (세포수 기반 ANOVA, NOEC/LOEC)
-2. **물벼룩 (Daphnia):** 급성 유영저해 시험 (Probit 분석 -> EC50)
-3. **어류 (Fish):** 급성 독성 시험 (Probit 분석 -> LC50)
+이 앱은 다음 세 가지 실험에 대한 전문 통계 분석을 지원합니다:
+1. **조류 (Algae):** 비성장률(Rate) 및 수율(Yield) 각각에 대한 **NOEC/LOEC** 및 **ErC50/EyC50** 산출
+2. **물벼룩 (Daphnia):** 급성 유영저해 시험 (EC50)
+3. **어류 (Fish):** 급성 독성 시험 (LC50)
 """)
 st.divider()
 
 # 사이드바에서 실험 종류 선택
 analysis_type = st.sidebar.radio(
     "분석할 실험을 선택하세요",
-    ["🟢 조류 성장저해 (ANOVA/NOEC)", "🦐 물벼룩 유영저해 (EC50)", "🐟 어류 급성독성 (LC50)"]
+    ["🟢 조류 성장저해 (Algae)", "🦐 물벼룩 유영저해 (Daphnia)", "🐟 어류 급성독성 (Fish)"]
 )
 
 # -----------------------------------------------------------------------------
-# [기능 1] 조류 성장저해 분석 함수 (세포수 입력 버전)
+# [핵심 함수] 통계 및 EC50 산출 통합 함수 (조류용)
+# -----------------------------------------------------------------------------
+def analyze_algae_endpoint(df, endpoint_col, endpoint_name, ec_label):
+    """
+    endpoint_col: '비성장률' 또는 '수율' 컬럼명
+    endpoint_name: 화면 표시용 이름 (예: 비성장률)
+    ec_label: 결과 라벨 (예: ErC50, EyC50)
+    """
+    st.markdown(f"### 📊 {endpoint_name} 분석 결과 ({ec_label})")
+    
+    # 1. 데이터 준비
+    groups = df.groupby('농도(mg/L)')[endpoint_col].apply(list)
+    concentrations = sorted(groups.keys())
+    control_group = groups[0] # 농도 0 (대조군)
+    control_mean = np.mean(control_group)
+
+    # -------------------------------------------------------------------------
+    # A. 통계적 유의성 검정 (NOEC/LOEC)
+    # -------------------------------------------------------------------------
+    st.markdown("#### 1. 유의성 검정 (NOEC / LOEC)")
+    
+    # 기초 통계
+    summary = df.groupby('농도(mg/L)')[endpoint_col].agg(['mean', 'std', 'count']).reset_index()
+    st.dataframe(summary.style.format("{:.4f}"))
+
+    # 등분산성 (Levene)
+    data_list = [groups[c] for c in concentrations]
+    if len(data_list) < 2:
+        st.error("데이터 그룹이 충분하지 않습니다.")
+        return
+
+    l_stat, l_p = stats.levene(*data_list)
+    st.write(f"- 등분산성(Levene) P-value: **{l_p:.4f}**")
+
+    # ANOVA
+    f_stat, f_p = stats.f_oneway(*data_list)
+    st.write(f"- One-way ANOVA P-value: **{f_p:.4f}**")
+
+    noec = 0
+    loec = None
+
+    if f_p < 0.05:
+        st.caption("※ 대조군과 각 농도군 간의 다중비교(Bonferroni T-test)를 수행합니다.")
+        comparisons = []
+        alpha = 0.05 / (len(concentrations) - 1) # Bonferroni correction
+
+        for conc in concentrations:
+            if conc == 0: continue
+            # 등분산 여부에 따른 t-test
+            t_stat, t_p = stats.ttest_ind(control_group, groups[conc], equal_var=(l_p > 0.05))
+            
+            # 단측 검정(감소하는 방향) 고려: 여기서는 양측검정 후 p-value 해석
+            is_sig = t_p < alpha
+            
+            comparisons.append({
+                '농도': conc,
+                'P-value': f"{t_p:.4f}",
+                '유의수준(adj)': f"{alpha:.4f}",
+                '결과': '🚨 유의차 있음' if is_sig else '✅ 차이 없음'
+            })
+
+            if is_sig and loec is None:
+                loec = conc
+            if not is_sig:
+                noec = conc
+        
+        st.table(pd.DataFrame(comparisons))
+    else:
+        st.info("ANOVA 결과 통계적으로 유의한 차이가 없습니다.")
+        noec = max(concentrations)
+    
+    col1, col2 = st.columns(2)
+    col1.metric(f"{endpoint_name} NOEC", f"{noec} mg/L")
+    col2.metric(f"{endpoint_name} LOEC", f"{loec if loec else '> Max'} mg/L")
+
+    st.divider()
+
+    # -------------------------------------------------------------------------
+    # B. 독성값 산출 (EC50) - 저해율 기반 Probit
+    # -------------------------------------------------------------------------
+    st.markdown(f"#### 2. {ec_label} 산출 (저해율 기반)")
+
+    try:
+        # 저해율(Inhibition) 계산
+        # I = (Control_Mean - Treatment_Mean) / Control_Mean
+        # 개별 데이터 포인트가 아니라 '농도별 평균'을 사용하여 회귀분석 하는 것이 일반적임
+        
+        dose_resp = df.groupby('농도(mg/L)')[endpoint_col].mean().reset_index()
+        dose_resp = dose_resp[dose_resp['농도(mg/L)'] > 0].copy() # 대조군 제외
+
+        # 저해율 계산 (%)
+        dose_resp['Inhibition'] = (control_mean - dose_resp[endpoint_col]) / control_mean
+        
+        # 저해율 보정 (0보다 작으면 0.001, 1보다 크면 0.999 - Probit 변환 위해)
+        dose_resp['Inhibition_adj'] = dose_resp['Inhibition'].clip(0.001, 0.999)
+        
+        # Probit 변환
+        dose_resp['Probit'] = stats.norm.ppf(dose_resp['Inhibition_adj'])
+        dose_resp['Log_Conc'] = np.log10(dose_resp['농도(mg/L)'])
+
+        # 선형 회귀 (Log농도 vs Probit)
+        slope, intercept, r_val, p_val, std_err = stats.linregress(dose_resp['Log_Conc'], dose_resp['Probit'])
+
+        # EC50 계산 (Probit = 0 일 때)
+        log_ec50 = -intercept / slope
+        ec50_val = 10 ** log_ec50
+
+        # 결과 출력
+        c1, c2 = st.columns(2)
+        c1.metric(f"추정 {ec_label}", f"{ec50_val:.4f} mg/L")
+        c2.metric("결정계수 ($R^2$)", f"{r_val**2:.4f}")
+
+        # 그래프
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.scatter(dose_resp['Log_Conc'], dose_resp['Probit'], label='Data Points')
+        
+        x_range = np.linspace(dose_resp['Log_Conc'].min(), dose_resp['Log_Conc'].max(), 100)
+        ax.plot(x_range, slope*x_range + intercept, color='red', label='Regression')
+        
+        ax.axhline(0, color='green', linestyle='--', label='50% Inhibition')
+        ax.axvline(log_ec50, color='green', linestyle='--')
+        
+        ax.set_xlabel('Log Concentration')
+        ax.set_ylabel('Probit (Inhibition)')
+        ax.set_title(f"{ec_label} Probit Analysis")
+        ax.legend()
+        st.pyplot(fig)
+
+    except Exception as e:
+        st.warning(f"{ec_label} 산출 중 오류 발생 (데이터 분포 확인 필요): {e}")
+
+
+# -----------------------------------------------------------------------------
+# [기능 1] 조류 성장저해 분석 (메인)
 # -----------------------------------------------------------------------------
 def run_algae_analysis():
-    st.header("🟢 조류 성장저해 시험 분석")
-    st.info("농도별 최종 **세포수(Cell Count)**를 입력하여 유의차(독성 여부)를 검정합니다.")
+    st.header("🟢 조류 성장저해 시험 (OECD TG 201)")
+    st.info("초기 세포수와 최종 세포수를 입력하면 **비성장률(Growth Rate)**과 **수율(Yield)**을 자동 계산하여 분석합니다.")
 
-    # 1. 데이터 입력 초기값
-    if 'algae_data' not in st.session_state:
-        st.session_state.algae_data = pd.DataFrame({
+    # 1. 설정값 입력 (초기 세포수, 배양 시간)
+    with st.expander("⚙️ 실험 조건 설정 (클릭하여 열기)", expanded=True):
+        col_s1, col_s2 = st.columns(2)
+        init_cells = col_s1.number_input("초기 세포수 (cells/mL)", value=10000, step=1000, format="%d")
+        duration_hour = col_s2.number_input("배양 시간 (시간)", value=72, step=24)
+
+    # 2. 데이터 입력
+    if 'algae_data_v2' not in st.session_state:
+        # 예시 데이터 (0, 10, 32, 100 mg/L)
+        st.session_state.algae_data_v2 = pd.DataFrame({
             '농도(mg/L)': [0, 0, 0, 10, 10, 10, 32, 32, 32, 100, 100, 100],
-            '세포수 (cells/mL)': [
-                1000000, 1050000, 980000,  # 0 mg/L (대조군)
-                950000, 920000, 940000,    # 10 mg/L
-                700000, 680000, 720000,    # 32 mg/L
-                300000, 280000, 310000     # 100 mg/L
+            '최종 세포수 (cells/mL)': [
+                1000000, 1050000, 980000,  # Control
+                900000, 880000, 910000,    # 10 mg/L
+                500000, 480000, 520000,    # 32 mg/L
+                150000, 140000, 160000     # 100 mg/L
             ]
         })
 
-    # 2. 데이터 에디터
-    df = st.data_editor(
-        st.session_state.algae_data, 
+    st.subheader("📝 데이터 입력")
+    df_input = st.data_editor(
+        st.session_state.algae_data_v2, 
         num_rows="dynamic", 
         use_container_width=True,
         column_config={
-            "세포수 (cells/mL)": st.column_config.NumberColumn(
-                "세포수 (cells/mL)",
-                format="%d"
-            )
+            "최종 세포수 (cells/mL)": st.column_config.NumberColumn(format="%d")
         }
     )
 
-    if st.button("조류 통계 분석 실행"):
-        col_name = '세포수 (cells/mL)'
-        
-        if df.empty or '농도(mg/L)' not in df.columns or col_name not in df.columns:
-            st.error(f"데이터 형식을 확인해주세요. '{col_name}' 컬럼이 필요합니다.")
+    if st.button("조류 독성값(ErC50, EyC50) 계산하기"):
+        if df_input.empty:
+            st.error("데이터가 없습니다.")
             return
 
-        try:
-            # 그룹화
-            groups = df.groupby('농도(mg/L)')[col_name].apply(list)
-            concentrations = sorted(groups.keys())
-            control_group = groups[0] # 농도 0을 대조군으로 가정
+        # 3. 데이터 전처리 및 파생변수 계산
+        df = df_input.copy()
+        
+        # (1) 수율(Yield) = 최종 - 초기
+        df['수율'] = df['최종 세포수 (cells/mL)'] - init_cells
+        
+        # (2) 비성장률(Specific Growth Rate) = (ln(최종) - ln(초기)) / 시간
+        # log(0) 방지를 위해 아주 작은 수 더할 수도 있음, 여기선 세포수가 충분하다 가정
+        df['비성장률'] = (np.log(df['최종 세포수 (cells/mL)']) - np.log(init_cells)) / (duration_hour / 24) 
+        # 보통 day 단위로 계산하므로 /24 함. (취향에 따라 hour 단위면 그냥 duration_hour)
+        # 여기서는 '일(day)' 단위 성장률로 계산 (일반적 관행)
 
-            st.subheader("1. 기초 통계량")
-            summary = df.groupby('농도(mg/L)')[col_name].agg(['mean', 'std', 'count']).reset_index()
-            st.dataframe(summary.style.format("{:.2f}"))
-
-            # --- 그래프 그리기 (Boxplot) ---
-            st.subheader("📊 농도별 세포수 분포")
-            fig, ax = plt.subplots(figsize=(8, 4))
-            plot_data = [groups[c] for c in concentrations]
-            ax.boxplot(plot_data, labels=concentrations)
-            ax.set_xlabel("Concentration (mg/L)")
-            ax.set_ylabel("Cell Count (cells/mL)")
-            ax.set_title("Cell Count by Concentration")
-            st.pyplot(fig)
-
-            # --- 정규성 검정 ---
-            st.subheader("2. 정규성 검정 (Shapiro-Wilk)")
-            normality_results = []
-            for conc in concentrations:
-                data = groups[conc]
-                if len(data) >= 3:
-                    stat, p = stats.shapiro(data)
-                    normality_results.append({'농도': conc, 'P-value': f"{p:.4f}", '결과': '정규성 만족' if p > 0.05 else '정규성 위배'})
-                else:
-                    normality_results.append({'농도': conc, 'P-value': '-', '결과': '데이터 부족'})
-            st.table(pd.DataFrame(normality_results))
-
-            # --- 등분산성 검정 ---
-            st.subheader("3. 등분산성 검정 (Levene)")
-            data_list = [groups[conc] for conc in concentrations]
-            l_stat, l_p = stats.levene(*data_list)
-            st.write(f"P-value: **{l_p:.4f}** ({'등분산 만족' if l_p > 0.05 else '이분산(등분산 위배)'})")
-
-            # --- ANOVA ---
-            st.subheader("4. 통계적 유의성 검정 (One-way ANOVA)")
-            f_stat, f_p = stats.f_oneway(*data_list)
-            st.write(f"ANOVA P-value: **{f_p:.4f}**")
-
-            if f_p < 0.05:
-                st.success("통계적으로 유의한 차이가 있습니다. (P < 0.05)")
-                
-                # --- 사후 검정 ---
-                st.subheader("5. NOEC / LOEC 도출 (Dunnett's type)")
-                st.caption("대조군(0 mg/L)과 각 농도군 간의 비교 분석 결과입니다.")
-                
-                noec = 0
-                loec = None
-                comparisons = []
-                alpha = 0.05 / (len(concentrations) - 1) 
-                
-                for conc in concentrations:
-                    if conc == 0: continue
-                    
-                    equal_var_option = (l_p > 0.05)
-                    t_stat, t_p = stats.ttest_ind(control_group, groups[conc], equal_var=equal_var_option)
-                    
-                    is_sig = t_p < alpha
-                    # 들여쓰기 오류가 발생했던 부분 수정 완료
-                    comparisons.append({
-                        '비교 농도': conc, 
-                        'T-stat': f"{t_stat:.2f}", 
-                        'P-value': f"{t_p:.4f}", 
-                        '보정된 Alpha': f"{alpha:.4f}",
-                        '판정': '🚨 유의한 감소(독성)' if is_sig else '✅ 차이 없음'
-                    })
-                    
-                    if is_sig and loec is None:
-                        loec = conc
-                    if not is_sig:
-                        noec = conc
-                
-                st.table(pd.DataFrame(comparisons))
-                
-                c1, c2 = st.columns(2)
-                c1.metric("NOEC (최대무영향농도)", f"{noec} mg/L")
-                c2.metric("LOEC (최소영향농도)", f"{loec if loec else '> 최대농도'} mg/L")
-
-            else:
-                st.info("농도 간 유의한 차이가 없습니다. (P > 0.05)")
-                st.write(f"NOEC: > {max(concentrations)} mg/L")
-
-        except Exception as e:
-            st.error(f"분석 중 오류가 발생했습니다: {e}")
+        st.divider()
+        
+        # 4. 결과 탭 구성
+        tab1, tab2 = st.tabs(["📈 비성장률 분석 (ErC50)", "📉 수율 분석 (EyC50)"])
+        
+        with tab1:
+            st.info("비성장률(Specific Growth Rate)에 기반한 분석입니다.")
+            analyze_algae_endpoint(df, '비성장률', '비성장률(Growth Rate)', 'ErC50')
+            
+        with tab2:
+            st.info("수율(Yield, 생물량 차이)에 기반한 분석입니다.")
+            analyze_algae_endpoint(df, '수율', '수율(Yield)', 'EyC50')
 
 
 # -----------------------------------------------------------------------------
-# [기능 2] 어류/물벼룩 Probit 분석 함수
+# [기능 2] 어류/물벼룩 Probit 분석 함수 (기존 유지)
 # -----------------------------------------------------------------------------
 def run_probit_analysis(test_name, value_label):
     st.header(f"{test_name} 분석")
@@ -208,9 +279,8 @@ def run_probit_analysis(test_name, value_label):
         except Exception as e:
             st.error(f"계산 오류: {e}")
 
-
 # -----------------------------------------------------------------------------
-# [메인] 선택에 따른 화면 표시
+# [메인] 실행 로직
 # -----------------------------------------------------------------------------
 if "조류" in analysis_type:
     run_algae_analysis()
