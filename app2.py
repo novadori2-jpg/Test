@@ -10,9 +10,7 @@ import matplotlib.pyplot as plt
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="생태독성 전문 분석기 (Pro)", page_icon="🧬", layout="wide")
 
-# 한글 폰트 설정 (OS별 호환성 고려 - 필요 시 시스템 폰트 경로로 수정 필요)
-# Streamlit Cloud 등에서는 기본 폰트로 출력되므로 영문 라벨을 병기하거나 
-# 별도의 폰트 설치 과정이 필요할 수 있습니다. 여기서는 기본 설정으로 진행합니다.
+# 한글 폰트 설정 (OS별 호환성 고려)
 plt.rcParams['font.family'] = 'sans-serif' 
 plt.rcParams['axes.unicode_minus'] = False
 
@@ -30,10 +28,12 @@ st.divider()
 def get_example_data(species):
     """실험 종류에 따른 모의 데이터를 생성합니다."""
     if species == "🟢 조류 성장저해 (Algae)":
-        # OECD TG 201: 농도가 높을수록 성장률 감소
+        # OECD TG 201: 세포수(Cell count) 기반 예시
+        # 수율(Yield) 계산 로직이 필요하다면 여기서 처리하거나 원본 데이터를 제공
         data = {
             '농도(mg/L)': [0]*3 + [10]*3 + [20]*3 + [40]*3 + [80]*3 + [160]*3,
-            '반응값': [100, 98, 99,  # Control (100% 성장 가정)
+            # 예시: 초기 세포수 10,000 cells/mL 가정 시 최종 세포수 데이터
+            '반응값': [100, 98, 99,  # Control (성장 잘됨)
                        90, 88, 92, 
                        70, 65, 72, 
                        40, 45, 38, 
@@ -43,13 +43,17 @@ def get_example_data(species):
         # 반응값을 저해율(%)로 변환 (Control 평균 대비)
         df = pd.DataFrame(data)
         ctrl_mean = df[df['농도(mg/L)'] == 0]['반응값'].mean()
+        
+        # 저해율 계산 (Inhibition = (Control_mean - Treatment) / Control_mean * 100)
         df['Inhibition(%)'] = (ctrl_mean - df['반응값']) / ctrl_mean * 100
-        # 음수 보정
+        
+        # 음수 보정 (성장이 Control보다 더 잘된 경우 0으로 처리)
         df['Inhibition(%)'] = df['Inhibition(%)'].apply(lambda x: max(x, 0))
+        
         return df, 'Inhibition(%)', 'Growth Inhibition'
 
     elif species == "🦐 물벼룩 유영저해 (Daphnia)":
-        # OECD TG 202: 농도가 높을수록 유영저해(%) 증가
+        # OECD TG 202
         data = {
             '농도(mg/L)': [0]*4 + [5]*4 + [10]*4 + [20]*4 + [40]*4 + [80]*4,
             'Response(%)': [0, 0, 0, 5,   # Control
@@ -62,7 +66,7 @@ def get_example_data(species):
         return pd.DataFrame(data), 'Response(%)', 'Immobility'
 
     else: # 🐟 어류 급성독성 (Fish)
-        # OECD TG 203: 농도가 높을수록 치사율(%) 증가
+        # OECD TG 203
         data = {
             '농도(mg/L)': [0]*3 + [10]*3 + [20]*3 + [40]*3 + [80]*3 + [160]*3,
             'Mortality(%)': [0, 0, 0, 
@@ -75,12 +79,11 @@ def get_example_data(species):
         return pd.DataFrame(data), 'Mortality(%)', 'Mortality'
 
 # -----------------------------------------------------------------------------
-# [모듈 2] 상세 통계 분석 (NOEC/LOEC) - 기존 코드 수정 및 완성
+# [모듈 2] 상세 통계 분석 (NOEC/LOEC)
 # -----------------------------------------------------------------------------
 def perform_detailed_stats(df, endpoint_col, endpoint_name):
     st.markdown(f"### 📊 1. {endpoint_name} 통계적 가설 검정 (NOEC/LOEC)")
     
-    # 데이터 그룹화
     groups = df.groupby('농도(mg/L)')[endpoint_col].apply(list)
     concentrations = sorted(groups.keys())
     control_group = groups[0]
@@ -90,7 +93,7 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
     norm_res = []
     for conc in concentrations:
         g_data = groups[conc]
-        if len(g_data) >= 3 and np.std(g_data) > 0: # 데이터 3개 이상, 분산 0 아닐 때
+        if len(g_data) >= 3 and np.std(g_data) > 0:
             s, p = stats.shapiro(g_data)
             res = 'Normal' if p > 0.01 else 'Non-Normal'
             norm_res.append({'Conc': conc, 'P-value': f"{p:.4f}", 'Result': res})
@@ -106,8 +109,153 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
     else:
         is_homogeneous = False
 
-    # (3) 결과 요약 출력
+    # (3) 결과 요약
     col1, col2 = st.columns(2)
+    with col1:
+        st.write("#### 정규성 (Shapiro-Wilk)")
+        st.dataframe(pd.DataFrame(norm_res))
+    with col2:
+        st.write("#### 등분산성 & 분석 방법 선정")
+        st.write(f"- Levene P-value: **{l_p:.4f}** ({'등분산' if is_homogeneous else '이분산'})")
+        if not is_normal:
+            st.warning("👉 **비모수 검정 (Kruskal-Wallis)** 채택")
+            test_type = "non-param"
+        else:
+            st.success("👉 **모수 검정 (ANOVA)** 채택")
+            test_type = "param"
+
+    # (4) 가설 검정 및 사후 검정
+    st.write("#### 유의성 검정 결과 (Control vs Treatment)")
+    comparisons = []
+    noec, loec = max(concentrations), None 
+
+    alpha = 0.05 / (len(concentrations) - 1) if len(concentrations) > 1 else 0.05
+
+    for conc in concentrations:
+        if conc == 0: continue
+        
+        is_sig = False
+        p_val = 1.0
+        method = ""
+
+        if test_type == "non-param":
+            u, p_val = stats.mannwhitneyu(control_group, groups[conc], alternative='two-sided')
+            method = "Mann-Whitney"
+        else:
+            t, p_val = stats.ttest_ind(control_group, groups[conc], equal_var=is_homogeneous)
+            method = "Welch's t-test" if not is_homogeneous else "t-test"
+
+        is_sig = p_val < alpha
+        
+        comparisons.append({
+            '비교 농도': conc, 
+            'Method': method, 
+            'P-value': f"{p_val:.4f}", 
+            'Significance': '🚨 유의차 있음 (LOEC 후보)' if is_sig else '✅ 차이 없음'
+        })
+
+        if is_sig:
+            if loec is None: loec = conc 
+        else:
+            if loec is None: noec = conc
+
+    st.dataframe(pd.DataFrame(comparisons))
+    st.info(f"📍 **결론: NOEC = {noec} mg/L, LOEC = {loec if loec else '> ' + str(max(concentrations))} mg/L**")
+
+# -----------------------------------------------------------------------------
+# [모듈 3] 용량-반응 곡선 및 ECx/LCx 전구간 산출 (Hill Equation)
+# -----------------------------------------------------------------------------
+def hill_equation(x, top, bottom, ec50, hill_slope):
+    return bottom + (top - bottom) / (1 + (x / ec50)**(-hill_slope))
+
+def inverse_hill(y, top, bottom, ec50, hill_slope):
+    if y >= top: return np.inf
+    if y <= bottom: return 0
+    return ec50 * (( (top - bottom) / (y - bottom) ) - 1)**(1 / -hill_slope)
+
+def calculate_dose_response(df, endpoint_col):
+    st.markdown("### 📈 2. 농도-반응 곡선 및 ECx/LCx 산출")
+    
+    x_data = df['농도(mg/L)'].values
+    y_data = df[endpoint_col].values
+
+    # 초기 추정값 (Top=100, Bottom=0, EC50=Median, Slope=2)
+    p0 = [100, 0, np.median(x_data[x_data > 0]), 2]
+    bounds = ([90, -10, 0.0001, 0.1], [110, 10, np.inf, 20])
+
+    try:
+        popt, pcov = curve_fit(hill_equation, x_data + 1e-9, y_data, p0=p0, bounds=bounds, maxfev=5000)
+        top_fit, bot_fit, ec50_fit, slope_fit = popt
+        
+        st.success(f"모델 피팅 성공!")
+        
+        # 그래프 그리기
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.scatter(x_data, y_data, color='black', alpha=0.6, label='Observed Data', zorder=5)
+        
+        x_curve = np.logspace(np.log10(max(min(x_data[x_data>0]), 0.1)), np.log10(max(x_data)), 200)
+        y_curve = hill_equation(x_curve, *popt)
+        ax.plot(x_curve, y_curve, color='blue', linewidth=2, label='Fitted Curve')
+        
+        ax.axhline(50, color='red', linestyle='--', alpha=0.5)
+        ax.axvline(ec50_fit, color='red', linestyle='--', alpha=0.5, label=f'EC50: {ec50_fit:.2f}')
+
+        ax.set_xscale('log')
+        ax.set_xlabel("Concentration (mg/L) [Log Scale]", fontsize=12)
+        ax.set_ylabel("Response (%)", fontsize=12)
+        ax.set_title("Dose-Response Curve (OECD TG)", fontsize=14)
+        ax.set_ylim(-5, 110)
+        ax.grid(True, which="both", ls="-", alpha=0.2)
+        ax.legend()
+        st.pyplot(fig)
+
+        # EC5 ~ EC95 테이블 산출
+        st.write("#### 📋 독성값 상세 산출표 (EC5 ~ EC95)")
+        ec_results = []
+        for level in range(5, 100, 5):
+            calc_conc = inverse_hill(level, top_fit, bot_fit, ec50_fit, slope_fit)
+            ec_results.append({
+                'Level': f"EC{level} / LC{level}",
+                'Response(%)': level,
+                'Calc. Conc (mg/L)': calc_conc
+            })
+        
+        res_df = pd.DataFrame(ec_results)
+        st.dataframe(
+            res_df.style.highlight_between(left=49, right=51, axis=1, props='font-weight:bold; background-color:#ffffcc;')
+            .format({"Calc. Conc (mg/L)": "{:.4f}"})
+        )
+        
+    except Exception as e:
+        st.error(f"곡선 피팅 실패: {e}")
+
+# -----------------------------------------------------------------------------
+# [메인 실행부]
+# -----------------------------------------------------------------------------
+analysis_type = st.sidebar.radio(
+    "분석할 실험을 선택하세요",
+    ["🟢 조류 성장저해 (Algae)", "🦐 물벼룩 유영저해 (Daphnia)", "🐟 어류 급성독성 (Fish)"]
+)
+
+st.sidebar.markdown("---")
+data_source = st.sidebar.radio("데이터 소스", ["예제 데이터 사용", "CSV 업로드 (구현 예정)"])
+
+if data_source == "예제 데이터 사용":
+    df_main, y_col, y_name = get_example_data(analysis_type)
+    st.write(f"### 선택된 실험: {analysis_type}")
+    with st.expander("원본 데이터 보기"):
+        st.dataframe(df_main)
+else:
+    st.info("CSV 업로드 기능은 준비 중입니다.")
+    st.stop()
+
+tab1, tab2 = st.tabs(["📊 통계 분석 (NOEC/LOEC)", "📈 독성값 산출 (ECx/LCx)"])
+
+with tab1:
+    perform_detailed_stats(df_main, y_col, y_name)
+
+with tab2:
+    calculate_dose_response(df_main, y_col)    col1, col2 = st.columns(2)
     with col1:
         st.write("#### 정규성 (Shapiro-Wilk)")
         st.dataframe(pd.DataFrame(norm_res))
