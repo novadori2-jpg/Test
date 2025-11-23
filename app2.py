@@ -26,7 +26,7 @@ analysis_type = st.sidebar.radio(
 )
 
 # -----------------------------------------------------------------------------
-# [핵심 함수] 조류 상세 통계 및 EC50 산출 함수
+# [함수] 조류 상세 통계 및 EC50 산출 함수
 # -----------------------------------------------------------------------------
 def analyze_algae_endpoint(df, endpoint_col, endpoint_name, ec_label):
     """
@@ -106,7 +106,7 @@ def analyze_algae_endpoint(df, endpoint_col, endpoint_name, ec_label):
     if f_p < 0.05:
         st.write("👉 그룹 간 유의한 차이가 발견되었습니다. 사후 검정(Multiple Comparison)을 수행합니다.")
         
-        # Bonferroni correction for multiple comparisons vs Control
+        # Bonferroni correction
         alpha = 0.05 / (len(concentrations) - 1)
         st.caption(f"보정된 유의수준 (Bonferroni alpha): {alpha:.5f}")
 
@@ -176,7 +176,7 @@ def analyze_algae_endpoint(df, endpoint_col, endpoint_name, ec_label):
         # 결과 출력
         c1, c2 = st.columns(2)
         c1.metric(f"추정 {ec_label}", f"{ec50_val:.4f} mg/L")
-        c2.metric("결정계수 ($R^2$)", f"{r_val**2:.4f}")
+        c2.metric("결정계수 (R²)", f"{r_val**2:.4f}")
 
         # 회귀 그래프
         fig, ax = plt.subplots(figsize=(6, 4))
@@ -280,183 +280,7 @@ def run_algae_analysis():
 
 
 # -----------------------------------------------------------------------------
-# [기능 2] 어류/물벼룩 Probit 분석 (기존 유지)
-# -----------------------------------------------------------------------------
-def run_probit_analysis(test_name, value_label):
-    st.header(f"{test_name} 분석")
-    st.info(f"농도별 반응 수(사망/유영저해)를 입력하여 {value_label}를 산출합니다.")
-
-    key_name = f"data_{value_label}"
-    if key_name not in st.session_state:
-        st.session_state[key_name] = pd.DataFrame({
-            '농도(mg/L)': [0, 6.25, 12.5, 25.0, 50.0, 100.0],
-            '총 개체수': [10, 10, 10, 10, 10, 10],
-            '반응 수': [0, 0, 1, 5, 9, 10]
-        })
-
-    edited_df = st.data_editor(st.session_state[key_name], num_rows="dynamic", use_container_width=True)
-
-    if st.button(f"{value_label} 계산하기"):
-        try:
-            df = edited_df.copy()
-            df_calc = df[df['농도(mg/L)'] > 0].copy()
-
-            if len(df_calc) < 3:
-                st.warning("최소 3개 이상의 농도 데이터가 필요합니다.")
-                return
-
-            df_calc['반응률'] = df_calc['반응 수'] / df_calc['총 개체수']
-            df_calc['반응률_보정'] = df_calc['반응률'].clip(0.001, 0.999)
-            df_calc['Probit'] = stats.norm.ppf(df_calc['반응률_보정'])
-            df_calc['Log_농도'] = np.log10(df_calc['농도(mg/L)'])
-
-            slope, intercept, r_value, p_value, std_err = stats.linregress(df_calc['Log_농도'], df_calc['Probit'])
-
-            log_50 = -intercept / slope
-            result_val = 10 ** log_50
-
-            c1, c2 = st.columns(2)
-            c1.metric(f"{value_label} 결과", f"{result_val:.4f} mg/L")
-            c2.metric("결정계수 (R²)", f"{r_value**2:.4f}")
-
-            fig, ax = plt.subplots()
-            ax.scatter(df_calc['Log_농도'], df_calc['Probit'], label='Data')
-            x_range = np.linspace(df_calc['Log_농도'].min(), df_calc['Log_농도'].max(), 100)
-            ax.plot(x_range, slope * x_range + intercept, color='red', label='Regression')
-            ax.axhline(0, color='green', linestyle='--', label='50% Response')
-            ax.axvline(log_50, color='green', linestyle='--')
-            ax.set_xlabel('Log Concentration')
-            ax.set_ylabel('Probit')
-            ax.legend()
-            st.pyplot(fig)
-
-        except Exception as e:
-            st.error(f"계산 오류: {e}")
-
-# -----------------------------------------------------------------------------
-# [메인] 실행 로직
-# -----------------------------------------------------------------------------
-if "조류" in analysis_type:
-    run_algae_analysis()
-elif "물벼룩" in analysis_type:
-    run_probit_analysis("🦐 물벼룩 급성 유영저해", "EC50")
-elif "어류" in analysis_type:
-    run_probit_analysis("🐟 어류 급성 독성", "LC50")
-        slope, intercept, r_val, p_val, std_err = stats.linregress(dose_resp['Log_Conc'], dose_resp['Probit'])
-
-        log_ec50 = -intercept / slope
-        ec50_val = 10 ** log_ec50
-
-        c1, c2 = st.columns(2)
-        c1.metric(f"추정 {ec_label}", f"{ec50_val:.4f} mg/L")
-        c2.metric("결정계수 ($R^2$)", f"{r_val**2:.4f}")
-
-        # 회귀 그래프
-        fig, ax = plt.subplots(figsize=(6, 4))
-        ax.scatter(dose_resp['Log_Conc'], dose_resp['Probit'], label='Data Points', color='blue')
-        x_range = np.linspace(dose_resp['Log_Conc'].min(), dose_resp['Log_Conc'].max(), 100)
-        ax.plot(x_range, slope*x_range + intercept, color='red', label='Regression Line')
-        ax.axhline(0, color='green', linestyle='--', label='50% Inhibition')
-        ax.axvline(log_ec50, color='green', linestyle='--')
-        ax.set_xlabel('Log Concentration')
-        ax.set_ylabel('Probit (Inhibition)')
-        ax.set_title(f"{ec_label} Regression Analysis")
-        ax.legend()
-        st.pyplot(fig)
-
-    except Exception as e:
-        st.warning(f"{ec_label} 산출 불가 (데이터 경향성 확인 필요): {e}")
-
-
-# -----------------------------------------------------------------------------
-# [기능 1] 조류 성장저해 분석 (메인)
-# -----------------------------------------------------------------------------
-def run_algae_analysis():
-    st.header("🟢 조류 성장저해 시험 (OECD TG 201)")
-    st.info("초기 세포수와 최종 세포수를 입력하면 **생물량(수율)**과 **비성장률**을 계산하고 분포를 시각화합니다.")
-
-    with st.expander("⚙️ 실험 조건 설정 (클릭하여 열기)", expanded=True):
-        col_s1, col_s2 = st.columns(2)
-        init_cells = col_s1.number_input("초기 세포수 (cells/mL)", value=10000, step=1000, format="%d")
-        duration_hour = col_s2.number_input("배양 시간 (시간)", value=72, step=24)
-
-    if 'algae_data_v2' not in st.session_state:
-        st.session_state.algae_data_v2 = pd.DataFrame({
-            '농도(mg/L)': [0, 0, 0, 10, 10, 10, 32, 32, 32, 100, 100, 100],
-            '최종 세포수 (cells/mL)': [
-                1000000, 1050000, 980000,
-                900000, 880000, 910000,
-                500000, 480000, 520000,
-                150000, 140000, 160000
-            ]
-        })
-
-    st.subheader("📝 데이터 입력")
-    df_input = st.data_editor(
-        st.session_state.algae_data_v2, 
-        num_rows="dynamic", 
-        use_container_width=True,
-        column_config={"최종 세포수 (cells/mL)": st.column_config.NumberColumn(format="%d")}
-    )
-
-    if st.button("분석 실행 (그래프 및 통계)"):
-        if df_input.empty:
-            st.error("데이터가 없습니다.")
-            return
-
-        # 데이터 계산
-        df = df_input.copy()
-        df['수율'] = df['최종 세포수 (cells/mL)'] - init_cells
-        # 비성장률 (일 단위)
-        df['비성장률'] = (np.log(df['최종 세포수 (cells/mL)']) - np.log(init_cells)) / (duration_hour / 24)
-
-        # ---------------------------------------------------------
-        # [추가됨] 생물량 및 성장률 분포 그래프 (Boxplot)
-        # ---------------------------------------------------------
-        st.divider()
-        st.subheader("📊 생물량 및 성장률 분포 (Boxplot)")
-        st.markdown("각 농도별 데이터의 분포(평균 및 편차)를 시각화합니다.")
-        
-        # Boxplot 그리기
-        fig_dist, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-        
-        # 그래프를 그리기 위해 데이터를 리스트 형태로 변환
-        concs = sorted(df['농도(mg/L)'].unique())
-        yield_data = [df[df['농도(mg/L)'] == c]['수율'] for c in concs]
-        rate_data = [df[df['농도(mg/L)'] == c]['비성장률'] for c in concs]
-        
-        # 1. 수율(Biomass) 그래프
-        ax1.boxplot(yield_data, labels=concs, patch_artist=True, boxprops=dict(facecolor='#D1E8E2'))
-        ax1.set_title('Yield (Biomass) Distribution')
-        ax1.set_xlabel('Concentration (mg/L)')
-        ax1.set_ylabel('Yield (Cell increase)')
-        ax1.grid(axis='y', linestyle=':', alpha=0.7)
-
-        # 2. 성장률 그래프
-        ax2.boxplot(rate_data, labels=concs, patch_artist=True, boxprops=dict(facecolor='#F2D7D5'))
-        ax2.set_title('Specific Growth Rate Distribution')
-        ax2.set_xlabel('Concentration (mg/L)')
-        ax2.set_ylabel('Growth Rate (1/day)')
-        ax2.grid(axis='y', linestyle=':', alpha=0.7)
-
-        st.pyplot(fig_dist)
-        st.caption("박스(Box)는 데이터의 50% 범위를, 가운데 선은 중앙값(Median)을 나타냅니다.")
-        st.divider()
-
-        # ---------------------------------------------------------
-        # 결과 탭 (통계 및 EC50)
-        # ---------------------------------------------------------
-        tab1, tab2 = st.tabs(["📈 비성장률 분석 (ErC50)", "📉 수율 분석 (EyC50)"])
-        
-        with tab1:
-            analyze_algae_endpoint(df, '비성장률', '비성장률(Growth Rate)', 'ErC50')
-            
-        with tab2:
-            analyze_algae_endpoint(df, '수율', '수율(Yield, 생물량)', 'EyC50')
-
-
-# -----------------------------------------------------------------------------
-# [기능 2] 어류/물벼룩 Probit 분석 (기존 유지)
+# [기능 2] 어류/물벼룩 Probit 분석
 # -----------------------------------------------------------------------------
 def run_probit_analysis(test_name, value_label):
     st.header(f"{test_name} 분석")
