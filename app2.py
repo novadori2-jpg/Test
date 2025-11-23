@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 # -----------------------------------------------------------------------------
 # [공통] 페이지 설정
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="생태독성 전문 분석기 (Pro)", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="생태독성 전문 분석기 (Final)", page_icon="🧬", layout="wide")
 
 st.title("🧬 생태독성 전문 분석기 (Detailed Pro Ver.)")
 st.markdown("""
@@ -252,13 +252,44 @@ def run_algae_analysis():
     
     if st.button("상세 분석 실행"):
         df = df_input.copy()
+        # 파생변수 계산
         df['수율'] = df['최종 세포수 (cells/mL)'] - init_cells
         df['비성장률'] = (np.log(df['최종 세포수 (cells/mL)']) - np.log(init_cells)) / (duration/24)
         
+        # ---------------------------------------------------------
+        # [복구됨] 생물량 및 성장률 분포 그래프 (Boxplot)
+        # ---------------------------------------------------------
+        st.divider()
+        st.subheader("📊 데이터 분포 시각화 (Boxplot)")
+        
+        fig_dist, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+        
+        concs = sorted(df['농도(mg/L)'].unique())
+        yield_data = [df[df['농도(mg/L)'] == c]['수율'] for c in concs]
+        rate_data = [df[df['농도(mg/L)'] == c]['비성장률'] for c in concs]
+        
+        # 수율 그래프
+        ax1.boxplot(yield_data, labels=concs, patch_artist=True, boxprops=dict(facecolor='#D1E8E2'))
+        ax1.set_title('Yield (Biomass)')
+        ax1.set_xlabel('Concentration (mg/L)')
+        ax1.set_ylabel('Yield (Cell Increase)')
+        ax1.grid(axis='y', linestyle=':', alpha=0.7)
+
+        # 비성장률 그래프
+        ax2.boxplot(rate_data, labels=concs, patch_artist=True, boxprops=dict(facecolor='#F2D7D5'))
+        ax2.set_title('Specific Growth Rate')
+        ax2.set_xlabel('Concentration (mg/L)')
+        ax2.set_ylabel('Growth Rate (1/day)')
+        ax2.grid(axis='y', linestyle=':', alpha=0.7)
+
+        st.pyplot(fig_dist)
+        st.divider()
+        
+        # 탭 구성 (상세 통계 및 EC50)
         tab1, tab2 = st.tabs(["📈 비성장률(Rate) 분석", "📉 수율(Yield) 분석"])
         
         def show_results(target_col, name, ec_label):
-            # 1. 상세 통계
+            # 1. 상세 통계 (NOEC/LOEC)
             perform_detailed_stats(df, target_col, name)
             
             # 2. EC50 산출
