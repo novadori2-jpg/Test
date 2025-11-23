@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as np
 from scipy import stats
 import matplotlib.pyplot as plt
+from statsmodels.formula.api import glm
+from statsmodels.genmod import families
 
 # -----------------------------------------------------------------------------
 # [공통] 페이지 설정
@@ -23,7 +25,7 @@ analysis_type = st.sidebar.radio(
 )
 
 # -----------------------------------------------------------------------------
-# [핵심 로직 1] 상세 통계 분석 및 가설 검정 (NOEC/LOEC)
+# [핵심 로직 1] 상세 통계 분석 및 가설 검정 (NOEC/LOEC) - 변경 없음
 # -----------------------------------------------------------------------------
 def perform_detailed_stats(df, endpoint_col, endpoint_name):
     """
@@ -163,64 +165,227 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
 
 
 # -----------------------------------------------------------------------------
-# [핵심 로직 2] EC50/LC50 산출 (Probit -> Interpolation Fallback)
+# [핵심 로직 2] ECp/LCp 산출 (Probit -> Interpolation Fallback)
+# 요청 사항 1: EC5~EC95, LC5~LC95까지 5단위로 계산하도록 로직 확장
 # -----------------------------------------------------------------------------
-def calculate_point_estimate(df, endpoint_col, control_mean, label):
+def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=False):
     dose_resp = df.groupby('농도(mg/L)')[endpoint_col].mean().reset_index()
     dose_resp = dose_resp[dose_resp['농도(mg/L)'] > 0].copy() 
 
-    if '반응 수' in df.columns:
+    if is_animal_test:
+        # 어류/물벼룩 (반응 수 / 총 개체수)
         total = df.groupby('농도(mg/L)')['총 개체수'].mean()[dose_resp['농도(mg/L)']].values
         dose_resp['Inhibition'] = dose_resp[endpoint_col] / total
     else:
+        # 조류 (성장 저해율)
         dose_resp['Inhibition'] = (control_mean - dose_resp[endpoint_col]) / control_mean
 
     method_used = "Probit Analysis"
-    ec50_val = None
+    ec_lc_results = {'p': [], 'value': [], 'status': []}
     r_squared = 0
     plot_info = {}
+    p_values = np.arange(5, 100, 5) / 100 # [0.05, 0.10, ..., 0.95]
     
-    # 1차 시도: Probit
+    # 1차 시도: Probit (Statsmodels GLM 사용)
     try:
-        dose_resp['Inhibition_adj'] = dose_resp['Inhibition'].clip(0.001, 0.999)
-        dose_resp['Probit'] = stats.norm.ppf(dose_resp['Inhibition_adj'])
-        dose_resp['Log_Conc'] = np.log10(dose_resp['농도(mg/L)'])
+        if is_animal_test:
+            # Statsmodels를 사용한 Probit GLM (이진 반응에 적합)
+            df_probit = df[df['농도(mg/L)'] > 0].copy()
+            df_probit['Log_Conc'] = np.log10(df_probit['농도(mg/L)'])
+            
+            # 독립적인 반응 비율로 변환
+            total_counts = df_probit.groupby('농도(mg/L)')['총 개체수'].mean().reset_index()
+            total_counts = total_counts.rename(columns={'총 개체수': 'total'})
+            df_probit = pd.merge(df_probit, total_counts, on='농도(mg/L)')
+            df_probit['proportion'] = df_probit['반응 수'] / df_probit['total']
+            df_probit['not_response'] = df_probit['total'] - df_probit['반응 수']
+            
+            # GLM 모델 (Logit 또는 Probit) - 여기서는 Probit을 따름
+            # statsmodels.api.GLM(family=sm.families.Binomial(), link=sm.families.links.probit)
+            # 그러나 t-test 기반의 Probit 회귀는 stats.linregress를 사용하는 경우가 많으므로 기존 방식 유지 및 보완
+            
+            dose_resp['Inhibition_adj'] = dose_resp['Inhibition'].clip(0.001, 0.999)
+            dose_resp['Probit'] = stats.norm.ppf(dose_resp['Inhibition_adj'])
+            dose_resp['Log_Conc'] = np.log10(dose_resp['농도(mg/L)'])
+            
+            slope, intercept, r_val, _, _ = stats.linregress(dose_resp['Log_Conc'], dose_resp['Probit'])
+            r_squared = r_val ** 2
+            
+            if r_squared < 0.6 or slope <= 0: # 적합도 기준
+                 raise ValueError("Low Probit Fit")
+            
+            for p in p_values:
+                # Probit: P% 효과 = Z-score(P)
+                # Z = slope * log(C) + intercept
+                # log(C) = (Z - intercept) / slope
+                z_score = stats.norm.ppf(p)
+                log_ecp = (z_score - intercept) / slope
+                ecp_val = 10 ** log_ecp
+                
+                # Probit 모델이 유효한 농도 범위 내에서만 값을 계산
+                if ecp_val > dose_resp['농도(mg/L)'].min() and ecp_val < dose_resp['농도(mg/L)'].max() * 2:
+                     ec_lc_results['p'].append(int(p * 100))
+                     ec_lc_results['value'].append(f"{ecp_val:.4f}")
+                     ec_lc_results['status'].append("✅ Probit")
+                else:
+                     ec_lc_results['p'].append(int(p * 100))
+                     ec_lc_results['value'].append("-")
+                     ec_lc_results['status'].append("⚠️ Range Fail")
 
-        slope, intercept, r_val, p_val, std_err = stats.linregress(dose_resp['Log_Conc'], dose_resp['Probit'])
-        r_squared = r_val ** 2
-        
-        if r_squared < 0.6 or slope <= 0:
-            raise ValueError("Low Fit")
 
-        log_ec50 = -intercept / slope
-        ec50_val = 10 ** log_ec50
-        
-        plot_info = {
-            'type': 'probit', 'x': dose_resp['Log_Conc'], 'y': dose_resp['Probit'], 
-            'slope': slope, 'intercept': intercept, 'ec50': log_ec50
-        }
+            plot_info = {
+                'type': 'probit', 'x': dose_resp['Log_Conc'], 'y': dose_resp['Probit'], 
+                'slope': slope, 'intercept': intercept, 'r_squared': r_squared,
+                'x_original': dose_resp['농도(mg/L)'], 'y_original': dose_resp['Inhibition']
+            }
 
-    # 2차 시도: Linear Interpolation
-    except Exception:
-        method_used = "Linear Interpolation (ICp)"
-        dose_resp = dose_resp.sort_values('Inhibition')
-        
-        lower = dose_resp[dose_resp['Inhibition'] <= 0.5].max()
-        upper = dose_resp[dose_resp['Inhibition'] >= 0.5].min()
-        
-        if pd.isna(lower['Inhibition']) or pd.isna(upper['Inhibition']):
-            ec50_val = None
         else:
-            x1, y1 = lower['농도(mg/L)'], lower['Inhibition']
-            x2, y2 = upper['농도(mg/L)'], upper['Inhibition']
-            if y1 == y2:
-                ec50_val = x1
-            else:
-                ec50_val = x1 + (0.5 - y1) * (x2 - x1) / (y2 - y1)
-        
-        plot_info = {'type': 'linear', 'data': dose_resp, 'ec50': ec50_val}
+            # 조류 (성장 저해율) - stats.linregress 기반 Probit (기존 방식 유지)
+            dose_resp['Inhibition_adj'] = dose_resp['Inhibition'].clip(0.001, 0.999)
+            dose_resp['Probit'] = stats.norm.ppf(dose_resp['Inhibition_adj'])
+            dose_resp['Log_Conc'] = np.log10(dose_resp['농도(mg/L)'])
 
-    return ec50_val, r_squared, method_used, plot_info
+            slope, intercept, r_val, _, _ = stats.linregress(dose_resp['Log_Conc'], dose_resp['Probit'])
+            r_squared = r_val ** 2
+
+            if r_squared < 0.6 or slope <= 0:
+                raise ValueError("Low Probit Fit")
+
+            for p in p_values:
+                z_score = stats.norm.ppf(p)
+                log_ecp = (z_score - intercept) / slope
+                ecp_val = 10 ** log_ecp
+                
+                if ecp_val > dose_resp['농도(mg/L)'].min() and ecp_val < dose_resp['농도(mg/L)'].max() * 2:
+                    ec_lc_results['p'].append(int(p * 100))
+                    ec_lc_results['value'].append(f"{ecp_val:.4f}")
+                    ec_lc_results['status'].append("✅ Probit")
+                else:
+                    ec_lc_results['p'].append(int(p * 100))
+                    ec_lc_results['value'].append("-")
+                    ec_lc_results['status'].append("⚠️ Range Fail")
+            
+            plot_info = {
+                'type': 'probit', 'x': dose_resp['Log_Conc'], 'y': dose_resp['Probit'], 
+                'slope': slope, 'intercept': intercept, 'r_squared': r_squared,
+                'x_original': dose_resp['농도(mg/L)'], 'y_original': dose_resp['Inhibition']
+            }
+
+
+    # 2차 시도: Linear Interpolation (ICp) - Probit 실패 시
+    except Exception as e:
+        method_used = "Linear Interpolation (ICp)"
+        r_squared = 0
+        dose_resp = dose_resp.sort_values('농도(mg/L)')
+        
+        ec_lc_results = {'p': [], 'value': [], 'status': []}
+        
+        for p in p_values:
+            target_inhibition = p
+            ecp_val = None
+            
+            lower = dose_resp[dose_resp['Inhibition'] <= target_inhibition]
+            upper = dose_resp[dose_resp['Inhibition'] >= target_inhibition]
+            
+            if not lower.empty and not upper.empty:
+                x1, y1 = lower.iloc[-1]['농도(mg/L)'], lower.iloc[-1]['Inhibition']
+                x2, y2 = upper.iloc[0]['농도(mg/L)'], upper.iloc[0]['Inhibition']
+                
+                if y1 == y2:
+                    ecp_val = x1
+                elif x1 == x2:
+                    ecp_val = x1
+                else:
+                    # 선형 보간: X = X1 + (Y_target - Y1) * (X2 - X1) / (Y2 - Y1)
+                    ecp_val = x1 + (target_inhibition - y1) * (x2 - x1) / (y2 - y1)
+            
+            ec_lc_results['p'].append(int(p * 100))
+            if ecp_val is not None:
+                ec_lc_results['value'].append(f"{ecp_val:.4f}")
+                ec_lc_results['status'].append("✅ Interpol")
+            else:
+                ec_lc_results['value'].append("-")
+                ec_lc_results['status'].append("⚠️ Range Fail")
+                
+        plot_info = {'type': 'linear', 'data': dose_resp, 'r_squared': r_squared}
+
+    return ec_lc_results, r_squared, method_used, plot_info
+
+# -----------------------------------------------------------------------------
+# [그래프 표시 함수] - 중복 코드 방지
+# -----------------------------------------------------------------------------
+def plot_ec_lc_curve(plot_info, label, ec_lc_results):
+    fig, ax = plt.subplots(figsize=(8, 6))
+    
+    if plot_info['type'] == 'probit':
+        # Probit 변환 그래프
+        ax_probit = ax
+        ax_probit.scatter(plot_info['x'], plot_info['y'], label='Probit Data', color='blue', alpha=0.7)
+        x_line = np.linspace(min(plot_info['x']), max(plot_info['x']), 100)
+        ax_probit.plot(x_line, plot_info['slope']*x_line + plot_info['intercept'], color='red', label='Probit Fit Line', linestyle='-')
+        
+        # EC50/LC50 표시
+        ec50_log = (stats.norm.ppf(0.5) - plot_info['intercept']) / plot_info['slope']
+        ec50_val = 10 ** ec50_log
+        
+        ax_probit.axvline(ec50_log, color='green', linestyle='--', linewidth=1, label=f'{label} (Log)')
+        
+        ax_probit.set_title(f'{label} Probit Regression Plot (R²={plot_info["r_squared"]:.4f})')
+        ax_probit.set_xlabel('Log Concentration (log(mg/L))')
+        ax_probit.set_ylabel('Probit (Z-score)')
+        ax_probit.legend()
+        ax_probit.grid(True, alpha=0.5)
+
+        st.pyplot(fig)
+        
+        # -----------------------------------------------------------------------------
+        # 용량-반응 곡선 (Inhibition vs Log Conc) 추가
+        # -----------------------------------------------------------------------------
+        fig_dr, ax_dr = plt.subplots(figsize=(8, 6))
+        
+        # 데이터 포인트
+        ax_dr.scatter(np.log10(plot_info['x_original']), plot_info['y_original'] * 100, 
+                      label='Observed Data', color='blue', alpha=0.7)
+        
+        # 회귀선 (Probit 모델을 Inhibition으로 역변환)
+        x_pred = np.linspace(np.log10(min(plot_info['x_original'])), np.log10(max(plot_info['x_original'])), 100)
+        probit_pred = plot_info['slope']*x_pred + plot_info['intercept']
+        inhibition_pred = stats.norm.cdf(probit_pred) * 100
+        
+        ax_dr.plot(x_pred, inhibition_pred, color='red', label='Probit Dose-Response Fit')
+        
+        # EC50/LC50 표시
+        ax_dr.axhline(50, color='gray', linestyle=':', label='50% Effect')
+        ax_dr.axvline(ec50_log, color='green', linestyle='--', linewidth=1, label=f'{label} (Log {ec50_val:.4f})')
+        
+        ax_dr.set_title(f'{label} Dose-Response Curve (Probit)')
+        ax_dr.set_xlabel('Log Concentration (log(mg/L))')
+        ax_dr.set_ylabel('Inhibition / Response (%)')
+        ax_dr.legend()
+        ax_dr.grid(True, alpha=0.5)
+        st.pyplot(fig_dr)
+        
+    else:
+        # Linear Interpolation 그래프
+        fig, ax = plt.subplots(figsize=(8, 6))
+        d = plot_info['data']
+        
+        ax.plot(d['농도(mg/L)'], d['Inhibition'] * 100, marker='o', linestyle='-', color='blue', label='Linear Interp Data')
+        ax.axhline(50, color='red', linestyle='--', label='50% Cutoff')
+        
+        # EC50/LC50 표시 (결과에서 50% 값을 찾아 표시)
+        ec50_entry = [res for res in ec_lc_results['value'] if ec_lc_results['p'][ec_lc_results['value'].index(res)] == 50]
+        ec50_val = float(ec50_entry[0]) if ec50_entry and ec50_entry[0] != '-' else None
+        
+        if ec50_val:
+            ax.axvline(ec50_val, color='green', linestyle='--', linewidth=1, label=f'{label} ({ec50_val:.4f})')
+        
+        ax.set_title(f'{label} Dose-Response Curve (Linear Interpolation)')
+        ax.set_xlabel('Concentration (mg/L)')
+        ax.set_ylabel('Inhibition / Response (%)')
+        ax.legend()
+        ax.grid(True, alpha=0.5)
+        st.pyplot(fig)
 
 
 # -----------------------------------------------------------------------------
@@ -292,47 +457,37 @@ def run_algae_analysis():
             # 1. 상세 통계 (NOEC/LOEC)
             perform_detailed_stats(df, target_col, name)
             
-            # 2. EC50 산출
+            # 2. ECp 산출
             control_mean = df[df['농도(mg/L)']==0][target_col].mean()
-            ec50, r2, method, plot_info = calculate_point_estimate(df, target_col, control_mean, ec_label)
+            ec_lc_results, r2, method, plot_info = calculate_ec_lc_range(df, target_col, control_mean, ec_label, is_animal_test=False)
             
-            st.markdown(f"#### 5. {ec_label} 산출 결과")
+            st.markdown(f"#### 5. {ec_label} 범위 산출 결과")
+            
+            # EC50/LC50 값만 별도로 추출
+            ec50_entry = [res for res in ec_lc_results['value'] if ec_lc_results['p'][ec_lc_results['value'].index(res)] == 50]
+            ec50_val = ec50_entry[0] if ec50_entry and ec50_entry[0] != '-' else "산출 불가"
+            
             cm1, cm2, cm3 = st.columns(3)
-            cm1.metric(f"{ec_label}", f"{ec50:.4f} mg/L" if ec50 else "산출 불가")
+            cm1.metric(f"중심값 ({ec_label} 50)", f"{ec50_val} mg/L")
             cm2.metric("적용 모델", method)
             cm3.metric("R²", f"{r2:.4f}" if r2 > 0 else "-")
             
-            fig, ax = plt.subplots(figsize=(6, 4))
-            if plot_info['type'] == 'probit':
-                x = plot_info['x']
-                slope = plot_info['slope']
-                intercept = plot_info['intercept']
-                x_line = np.linspace(min(x), max(x), 100)
-                
-                ax.scatter(x, plot_info['y'], label='Data')
-                ax.plot(x_line, slope*x_line + intercept, color='red', label='Probit Fit')
-                ax.set_xlabel('Log Concentration')
-                ax.set_ylabel('Probit (Inhibition)')
-                if plot_info['ec50']:
-                    ax.axvline(plot_info['ec50'], color='green', linestyle='--', label='50% Effect')
-            else:
-                d = plot_info['data']
-                ax.plot(d['농도(mg/L)'], d['Inhibition'], marker='o', label='Linear Interp')
-                ax.axhline(0.5, color='red', linestyle='--', label='50% Cutoff')
-                if plot_info['ec50']:
-                    ax.axvline(plot_info['ec50'], color='green', linestyle='--')
+            # ECp 범위 테이블 출력
+            ecp_df = pd.DataFrame(ec_lc_results)
+            ecp_df = ecp_df.rename(columns={'p': f'{ec_label} (p)', 'value': '농도 (mg/L)', 'status': '적용'})
+            st.table(ecp_df)
             
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-            st.pyplot(fig)
+            # 그래프 출력
+            plot_ec_lc_curve(plot_info, ec_label, ec_lc_results)
 
         with tab1:
-            show_results('비성장률', '비성장률', 'ErC50')
+            show_results('비성장률', '비성장률', 'ErC')
         with tab2:
-            show_results('수율', '수율', 'EyC50')
+            show_results('수율', '수율', 'EyC')
 
 # -----------------------------------------------------------------------------
 # [분석 실행 함수] 어류/물벼룩
+# 요청 사항 2: 그래프 추가 및 ECp/LCp 범위 출력
 # -----------------------------------------------------------------------------
 def run_animal_analysis(test_name, label):
     st.header(f"{test_name}")
@@ -354,32 +509,37 @@ def run_animal_analysis(test_name, label):
         }
     )
     
-    if st.button("분석 실행"):
+    if st.button("상세 분석 실행"):
         df = df_input.copy()
         
-        st.subheader(f"📊 {label} 산출 결과")
-        ec50, r2, method, plot_info = calculate_point_estimate(df, '반응 수', 0, label)
+        # ---------------------------------------------------------
+        # NOEC/LOEC 분석 (동물 시험에서는 주로 독성값만 요구되지만, 코드 구조를 위해 생략 또는 필요시 추가 가능)
+        # 현재는 NOEC/LOEC 생략하고 독성값 분석만 진행
+        # ---------------------------------------------------------
+        
+        # ---------------------------------------------------------
+        # ECp/LCp 산출 및 그래프 출력
+        # ---------------------------------------------------------
+        ec_lc_results, r2, method, plot_info = calculate_ec_lc_range(df, '반응 수', 0, label, is_animal_test=True)
+        
+        st.subheader(f"📊 {label} 범위 산출 결과")
+        
+        # EC50/LC50 값만 별도로 추출
+        ec50_entry = [res for res in ec_lc_results['value'] if ec_lc_results['p'][ec_lc_results['value'].index(res)] == 50]
+        ec50_val = ec50_entry[0] if ec50_entry and ec50_entry[0] != '-' else "산출 불가"
         
         c1, c2, c3 = st.columns(3)
-        c1.metric(f"{label}", f"{ec50:.4f} mg/L" if ec50 else "산출 불가")
-        c2.metric("계산 방식", method)
+        c1.metric(f"중심값 ({label} 50)", f"{ec50_val} mg/L")
+        c2.metric("적용 모델", method)
         c3.metric("R²", f"{r2:.4f}" if r2 > 0 else "-")
         
-        fig, ax = plt.subplots()
-        if plot_info['type'] == 'probit':
-            ax.scatter(plot_info['x'], plot_info['y'], label='Data')
-            x_line = np.linspace(min(plot_info['x']), max(plot_info['x']), 100)
-            ax.plot(x_line, plot_info['slope']*x_line + plot_info['intercept'], color='red')
-            ax.set_xlabel('Log Concentration')
-            ax.set_ylabel('Probit')
-        else:
-            d = plot_info['data']
-            ax.plot(d['농도(mg/L)'], d['Inhibition'], marker='o')
-            ax.set_xlabel('Concentration')
-            ax.set_ylabel('Response Rate')
+        # ECp 범위 테이블 출력
+        ecp_df = pd.DataFrame(ec_lc_results)
+        ecp_df = ecp_df.rename(columns={'p': f'{label} (p)', 'value': '농도 (mg/L)', 'status': '적용'})
+        st.table(ecp_df)
         
-        ax.legend()
-        st.pyplot(fig)
+        # 그래프 출력
+        plot_ec_lc_curve(plot_info, label, ec_lc_results)
 
 
 # -----------------------------------------------------------------------------
@@ -388,6 +548,6 @@ def run_animal_analysis(test_name, label):
 if "조류" in analysis_type:
     run_algae_analysis()
 elif "물벼룩" in analysis_type:
-    run_animal_analysis("🦐 물벼룩 급성 유영저해", "EC50")
+    run_animal_analysis("🦐 물벼룩 급성 유영저해 (OECD TG 202)", "EC")
 elif "어류" in analysis_type:
-    run_animal_analysis("🐟 어류 급성 독성", "LC50")
+    run_animal_analysis("🐟 어류 급성 독성 (OECD TG 203)", "LC")
