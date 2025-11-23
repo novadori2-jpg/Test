@@ -7,13 +7,13 @@ import matplotlib.pyplot as plt
 # -----------------------------------------------------------------------------
 # [공통] 페이지 설정
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="생태독성 전문 분석기 (Final)", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="생태독성 전문 분석기 (Full Range)", page_icon="🧬", layout="wide")
 
 st.title("🧬 생태독성 전문 분석기 (Detailed Pro Ver.)")
 st.markdown("""
-이 앱은 **CETIS/ToxCalc 수준의 알고리즘**을 적용하되, **모든 통계적 검정 과정을 투명하게 공개**합니다.
-1. **통계 검정:** 기초통계 -> 정규성 -> 등분산성 -> (모수/비모수 자동선택) -> NOEC/LOEC 도출
-2. **독성값:** Probit 우선 적용, 적합도 미달 시 선형보간법 자동 전환
+이 앱은 **CETIS/ToxCalc 수준의 알고리즘**을 적용합니다.
+1. **통계 검정:** 정규성/등분산성 검정 후 모수/비모수 자동 선택 (NOEC/LOEC 도출)
+2. **독성값 산출:** **EC5 ~ EC95 전 구간 산출** (Probit 우선, 실패 시 선형보간법 자동 전환)
 """)
 st.divider()
 
@@ -51,7 +51,6 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
         data = groups[conc]
         if len(data) >= 3:
             stat, p = stats.shapiro(data)
-            # p < 0.01 이면 정규성 위배 (엄격한 기준)
             res_text = '✅ 만족 (Normal)' if p > 0.01 else '❌ 위배 (Non-Normal)'
             normality_results.append({
                 '농도(mg/L)': conc, 'Statistic': f"{stat:.4f}", 'P-value': f"{p:.4f}", '결과': res_text
@@ -101,6 +100,11 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
             for conc in concentrations:
                 if conc == 0:
                     continue
+                
+                u_stat, u_p = stats.mannwhitneyu(control_group, groups[conc], alternative='two-sided')
+                is_sig = u_p < alpha
+                comparisons.append({
+                    '비교 농도': conc, 'Method': 'Mann-Whitney', 'P-value': f"{u_p
                 
                 u_stat, u_p = stats.mannwhitneyu(control_group, groups[conc], alternative='two-sided')
                 is_sig = u_p < alpha
