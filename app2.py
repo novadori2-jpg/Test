@@ -3,11 +3,11 @@ import pandas as pd
 import numpy as np
 from scipy import stats
 import matplotlib.pyplot as plt
-from statsmodels.formula.api import glm
-from statsmodels.genmod import families
+# from statsmodels.formula.api import glm # 사용되지 않아 제거
+# from statsmodels.genmod import families # 사용되지 않아 제거
 
 # -----------------------------------------------------------------------------
-# [공통] 페이지 설정
+# [공통] 페이지 설정 - (변경 없음)
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="생태독성 전문 분석기 (Final)", page_icon="🧬", layout="wide")
 
@@ -25,8 +25,10 @@ analysis_type = st.sidebar.radio(
 )
 
 # -----------------------------------------------------------------------------
-# [핵심 로직 1] 상세 통계 분석 및 가설 검정 (NOEC/LOEC) - 변경 없음
+# [핵심 로직 1] 상세 통계 분석 및 가설 검정 (NOEC/LOEC) - (변경 없음)
 # -----------------------------------------------------------------------------
+# ... (perform_detailed_stats 함수 내용은 변경 없음) ...
+
 def perform_detailed_stats(df, endpoint_col, endpoint_name):
     """
     상세 통계량을 출력하고, 정규성/등분산성 결과에 따라 
@@ -165,10 +167,10 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
 
 
 # -----------------------------------------------------------------------------
-# [핵심 로직 2] ECp/LCp 산출 (Probit -> Interpolation Fallback)
-# 요청 사항 1: EC5~EC95, LC5~LC95까지 5단위로 계산하도록 로직 확장
+# [핵심 로직 2] ECp/LCp 산출 (Probit -> Interpolation Fallback) - (변경 없음)
 # -----------------------------------------------------------------------------
 def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=False):
+    # ... (기존 calculate_ec_lc_range 함수 로직과 동일) ...
     dose_resp = df.groupby('농도(mg/L)')[endpoint_col].mean().reset_index()
     dose_resp = dose_resp[dose_resp['농도(mg/L)'] > 0].copy() 
 
@@ -186,90 +188,38 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
     plot_info = {}
     p_values = np.arange(5, 100, 5) / 100 # [0.05, 0.10, ..., 0.95]
     
-    # 1차 시도: Probit (Statsmodels GLM 사용)
+    # 1차 시도: Probit
     try:
-        if is_animal_test:
-            # Statsmodels를 사용한 Probit GLM (이진 반응에 적합)
-            df_probit = df[df['농도(mg/L)'] > 0].copy()
-            df_probit['Log_Conc'] = np.log10(df_probit['농도(mg/L)'])
+        dose_resp['Inhibition_adj'] = dose_resp['Inhibition'].clip(0.001, 0.999)
+        dose_resp['Probit'] = stats.norm.ppf(dose_resp['Inhibition_adj'])
+        dose_resp['Log_Conc'] = np.log10(dose_resp['농도(mg/L)'])
+        
+        slope, intercept, r_val, _, _ = stats.linregress(dose_resp['Log_Conc'], dose_resp['Probit'])
+        r_squared = r_val ** 2
+        
+        if r_squared < 0.6 or slope <= 0: # 적합도 기준
+             raise ValueError("Low Probit Fit")
+        
+        for p in p_values:
+            z_score = stats.norm.ppf(p)
+            log_ecp = (z_score - intercept) / slope
+            ecp_val = 10 ** log_ecp
             
-            # 독립적인 반응 비율로 변환
-            total_counts = df_probit.groupby('농도(mg/L)')['총 개체수'].mean().reset_index()
-            total_counts = total_counts.rename(columns={'총 개체수': 'total'})
-            df_probit = pd.merge(df_probit, total_counts, on='농도(mg/L)')
-            df_probit['proportion'] = df_probit['반응 수'] / df_probit['total']
-            df_probit['not_response'] = df_probit['total'] - df_probit['반응 수']
-            
-            # GLM 모델 (Logit 또는 Probit) - 여기서는 Probit을 따름
-            # statsmodels.api.GLM(family=sm.families.Binomial(), link=sm.families.links.probit)
-            # 그러나 t-test 기반의 Probit 회귀는 stats.linregress를 사용하는 경우가 많으므로 기존 방식 유지 및 보완
-            
-            dose_resp['Inhibition_adj'] = dose_resp['Inhibition'].clip(0.001, 0.999)
-            dose_resp['Probit'] = stats.norm.ppf(dose_resp['Inhibition_adj'])
-            dose_resp['Log_Conc'] = np.log10(dose_resp['농도(mg/L)'])
-            
-            slope, intercept, r_val, _, _ = stats.linregress(dose_resp['Log_Conc'], dose_resp['Probit'])
-            r_squared = r_val ** 2
-            
-            if r_squared < 0.6 or slope <= 0: # 적합도 기준
-                 raise ValueError("Low Probit Fit")
-            
-            for p in p_values:
-                # Probit: P% 효과 = Z-score(P)
-                # Z = slope * log(C) + intercept
-                # log(C) = (Z - intercept) / slope
-                z_score = stats.norm.ppf(p)
-                log_ecp = (z_score - intercept) / slope
-                ecp_val = 10 ** log_ecp
-                
-                # Probit 모델이 유효한 농도 범위 내에서만 값을 계산
-                if ecp_val > dose_resp['농도(mg/L)'].min() and ecp_val < dose_resp['농도(mg/L)'].max() * 2:
-                     ec_lc_results['p'].append(int(p * 100))
-                     ec_lc_results['value'].append(f"{ecp_val:.4f}")
-                     ec_lc_results['status'].append("✅ Probit")
-                else:
-                     ec_lc_results['p'].append(int(p * 100))
-                     ec_lc_results['value'].append("-")
-                     ec_lc_results['status'].append("⚠️ Range Fail")
+            # Probit 모델이 유효한 농도 범위 내에서만 값을 계산
+            if ecp_val > dose_resp['농도(mg/L)'].min() and ecp_val < dose_resp['농도(mg/L)'].max() * 2:
+                 ec_lc_results['p'].append(int(p * 100))
+                 ec_lc_results['value'].append(f"{ecp_val:.4f}")
+                 ec_lc_results['status'].append("✅ Probit")
+            else:
+                 ec_lc_results['p'].append(int(p * 100))
+                 ec_lc_results['value'].append("-")
+                 ec_lc_results['status'].append("⚠️ Range Fail")
 
-
-            plot_info = {
-                'type': 'probit', 'x': dose_resp['Log_Conc'], 'y': dose_resp['Probit'], 
-                'slope': slope, 'intercept': intercept, 'r_squared': r_squared,
-                'x_original': dose_resp['농도(mg/L)'], 'y_original': dose_resp['Inhibition']
-            }
-
-        else:
-            # 조류 (성장 저해율) - stats.linregress 기반 Probit (기존 방식 유지)
-            dose_resp['Inhibition_adj'] = dose_resp['Inhibition'].clip(0.001, 0.999)
-            dose_resp['Probit'] = stats.norm.ppf(dose_resp['Inhibition_adj'])
-            dose_resp['Log_Conc'] = np.log10(dose_resp['농도(mg/L)'])
-
-            slope, intercept, r_val, _, _ = stats.linregress(dose_resp['Log_Conc'], dose_resp['Probit'])
-            r_squared = r_val ** 2
-
-            if r_squared < 0.6 or slope <= 0:
-                raise ValueError("Low Probit Fit")
-
-            for p in p_values:
-                z_score = stats.norm.ppf(p)
-                log_ecp = (z_score - intercept) / slope
-                ecp_val = 10 ** log_ecp
-                
-                if ecp_val > dose_resp['농도(mg/L)'].min() and ecp_val < dose_resp['농도(mg/L)'].max() * 2:
-                    ec_lc_results['p'].append(int(p * 100))
-                    ec_lc_results['value'].append(f"{ecp_val:.4f}")
-                    ec_lc_results['status'].append("✅ Probit")
-                else:
-                    ec_lc_results['p'].append(int(p * 100))
-                    ec_lc_results['value'].append("-")
-                    ec_lc_results['status'].append("⚠️ Range Fail")
-            
-            plot_info = {
-                'type': 'probit', 'x': dose_resp['Log_Conc'], 'y': dose_resp['Probit'], 
-                'slope': slope, 'intercept': intercept, 'r_squared': r_squared,
-                'x_original': dose_resp['농도(mg/L)'], 'y_original': dose_resp['Inhibition']
-            }
+        plot_info = {
+            'type': 'probit', 'x': dose_resp['Log_Conc'], 'y': dose_resp['Probit'], 
+            'slope': slope, 'intercept': intercept, 'r_squared': r_squared,
+            'x_original': dose_resp['농도(mg/L)'], 'y_original': dose_resp['Inhibition']
+        }
 
 
     # 2차 시도: Linear Interpolation (ICp) - Probit 실패 시
@@ -312,9 +262,10 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
     return ec_lc_results, r_squared, method_used, plot_info
 
 # -----------------------------------------------------------------------------
-# [그래프 표시 함수] - 중복 코드 방지
+# [그래프 표시 함수] - (변경 없음)
 # -----------------------------------------------------------------------------
 def plot_ec_lc_curve(plot_info, label, ec_lc_results):
+    # ... (기존 plot_ec_lc_curve 함수 로직과 동일) ...
     fig, ax = plt.subplots(figsize=(8, 6))
     
     if plot_info['type'] == 'probit':
@@ -389,7 +340,19 @@ def plot_ec_lc_curve(plot_info, label, ec_lc_results):
 
 
 # -----------------------------------------------------------------------------
-# [분석 실행 함수] 조류 (Algae)
+# [스타일 함수] - 50% 효과 농도(EC50/LC50) 행 강조
+# -----------------------------------------------------------------------------
+def highlight_ec50(s, label):
+    """EC50/LC50에 해당하는 행을 강조하는 스타일 함수"""
+    # 'p' 컬럼의 값이 50인 행을 찾습니다.
+    is_50 = (s.name == f'{label} (p)') and (s.iloc[s.index[0]] == 50)
+    
+    # 해당 행 전체에 연한 파란색 배경을 적용합니다.
+    return ['background-color: #E6F3FF'] * len(s) if s[f'{label} (p)'] == 50 else [''] * len(s)
+
+
+# -----------------------------------------------------------------------------
+# [분석 실행 함수] 조류 (Algae) - 수정됨
 # -----------------------------------------------------------------------------
 def run_algae_analysis():
     st.header("🟢 조류 성장저해 시험 (OECD TG 201)")
@@ -468,14 +431,20 @@ def run_algae_analysis():
             ec50_val = ec50_entry[0] if ec50_entry and ec50_entry[0] != '-' else "산출 불가"
             
             cm1, cm2, cm3 = st.columns(3)
-            cm1.metric(f"중심값 ({ec_label} 50)", f"{ec50_val} mg/L")
+            cm1.metric(f"중심값 ({ec_label} 50)", f"**{ec50_val} mg/L**")
             cm2.metric("적용 모델", method)
             cm3.metric("R²", f"{r2:.4f}" if r2 > 0 else "-")
             
-            # ECp 범위 테이블 출력
+            # ECp 범위 테이블 출력 및 강조 (수정된 부분)
             ecp_df = pd.DataFrame(ec_lc_results)
             ecp_df = ecp_df.rename(columns={'p': f'{ec_label} (p)', 'value': '농도 (mg/L)', 'status': '적용'})
-            st.table(ecp_df)
+            
+            # 스타일링 적용 (람다 함수를 사용하여 'p' 값이 50인 행에 스타일 적용)
+            st.dataframe(
+                ecp_df.style.apply(lambda x: ['background-color: #E6F3FF; font-weight: bold'] * len(x) if x[f'{ec_label} (p)'] == 50 else [''] * len(x), axis=1),
+                hide_index=True,
+                use_container_width=True
+            )
             
             # 그래프 출력
             plot_ec_lc_curve(plot_info, ec_label, ec_lc_results)
@@ -486,8 +455,7 @@ def run_algae_analysis():
             show_results('수율', '수율', 'EyC')
 
 # -----------------------------------------------------------------------------
-# [분석 실행 함수] 어류/물벼룩
-# 요청 사항 2: 그래프 추가 및 ECp/LCp 범위 출력
+# [분석 실행 함수] 어류/물벼룩 - 수정됨
 # -----------------------------------------------------------------------------
 def run_animal_analysis(test_name, label):
     st.header(f"{test_name}")
@@ -513,11 +481,6 @@ def run_animal_analysis(test_name, label):
         df = df_input.copy()
         
         # ---------------------------------------------------------
-        # NOEC/LOEC 분석 (동물 시험에서는 주로 독성값만 요구되지만, 코드 구조를 위해 생략 또는 필요시 추가 가능)
-        # 현재는 NOEC/LOEC 생략하고 독성값 분석만 진행
-        # ---------------------------------------------------------
-        
-        # ---------------------------------------------------------
         # ECp/LCp 산출 및 그래프 출력
         # ---------------------------------------------------------
         ec_lc_results, r2, method, plot_info = calculate_ec_lc_range(df, '반응 수', 0, label, is_animal_test=True)
@@ -529,21 +492,27 @@ def run_animal_analysis(test_name, label):
         ec50_val = ec50_entry[0] if ec50_entry and ec50_entry[0] != '-' else "산출 불가"
         
         c1, c2, c3 = st.columns(3)
-        c1.metric(f"중심값 ({label} 50)", f"{ec50_val} mg/L")
+        c1.metric(f"중심값 ({label} 50)", f"**{ec50_val} mg/L**")
         c2.metric("적용 모델", method)
         c3.metric("R²", f"{r2:.4f}" if r2 > 0 else "-")
         
-        # ECp 범위 테이블 출력
+        # ECp 범위 테이블 출력 및 강조 (수정된 부분)
         ecp_df = pd.DataFrame(ec_lc_results)
         ecp_df = ecp_df.rename(columns={'p': f'{label} (p)', 'value': '농도 (mg/L)', 'status': '적용'})
-        st.table(ecp_df)
+        
+        # 스타일링 적용 (람다 함수를 사용하여 'p' 값이 50인 행에 스타일 적용)
+        st.dataframe(
+            ecp_df.style.apply(lambda x: ['background-color: #E6F3FF; font-weight: bold'] * len(x) if x[f'{label} (p)'] == 50 else [''] * len(x), axis=1),
+            hide_index=True,
+            use_container_width=True
+        )
         
         # 그래프 출력
         plot_ec_lc_curve(plot_info, label, ec_lc_results)
 
 
 # -----------------------------------------------------------------------------
-# 메인 실행
+# 메인 실행 - (변경 없음)
 # -----------------------------------------------------------------------------
 if "조류" in analysis_type:
     run_algae_analysis()
