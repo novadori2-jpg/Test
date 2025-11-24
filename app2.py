@@ -116,12 +116,13 @@ def get_icpin_values_with_ci(df_resp, endpoint, n_boot=1000):
         
         final_out[f'EC{level}'] = {'val': val_str, 'lcl': ci_str, 'ucl': ci_str}
         
-    return final_out, control_val, inhibition_rates # UnboundLocalError 해결
+    return final_out, control_val, inhibition_rates
 
 # -----------------------------------------------------------------------------
 # [핵심 로직 1] 상세 통계 분석 및 가설 검정 (NOEC/LOEC) - (변경 없음)
 # -----------------------------------------------------------------------------
 def perform_detailed_stats(df, endpoint_col, endpoint_name):
+    # ... (perform_detailed_stats function - Bonferroni logic maintained) ...
     """
     상세 통계량을 출력하고, 정규성/등분산성 결과에 따라 
     적절한 검정(T-test, ANOVA, Kruskal)을 수행하여 NOEC/LOEC를 찾습니다.
@@ -333,7 +334,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
             
             # Grouped data for GLM
             grouped_data = df_glm.groupby('농도(mg/L)').agg(
-                Response=(endpoint_col, 'sum'), 
+                Response=('반응 수', 'sum'), 
                 Total=('총 개체수', 'sum'),
                 Log_Conc=('Log_Conc', 'mean')
             ).reset_index()
@@ -452,7 +453,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         # ICPIN 로직에 맞게 DataFrame 준비
         df_icpin = df.copy()
         
-        # ***KeyError 방지 및 컬럼명 일치: ICPIN 로직이 요구하는 컬럼명으로 변경***
+        # ***KeyError 방지 및 컬럼명 일치***
         df_icpin = df_icpin.rename(columns={'농도(mg/L)': 'Concentration'})
         df_icpin['Value'] = df_icpin[endpoint_col]
         
