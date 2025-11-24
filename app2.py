@@ -39,7 +39,7 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
     groups = df.groupby('농도(mg/L)')[endpoint_col].apply(list)
     concentrations = sorted(groups.keys())
     control_group = groups[0]
-    num_groups = len(concentrations) 
+    num_groups = len(concentrations) # 그룹 수 확인
     
     if num_groups < 2:
         st.error("데이터 그룹이 2개 미만입니다 (대조군 포함). 분석을 수행할 수 없습니다.")
@@ -217,8 +217,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         total = df.groupby('농도(mg/L)')['총 개체수'].mean()[dose_resp['농도(mg/L)']].values
         dose_resp['Inhibition'] = dose_resp[endpoint_col] / total
     else:
-        # 조류 시험의 경우, 데이터가 최종 세포수를 나타내므로 mean을 사용
-        total = df.groupby('농도(mg/L)')[endpoint_col].count()[dose_resp['농도(mg/L)']].values # 재확인 필요: count 대신 total_replicates를 사용해야 함
+        total = df.groupby('농도(mg/L)')[endpoint_col].count()[dose_resp['농도(mg/L)']].values 
         dose_resp['Inhibition'] = (control_mean - dose_resp[endpoint_col]) / control_mean
 
     method_used = "Linear Interpolation (ICp)"
@@ -228,30 +227,10 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
 
     # **1순위: GLM Probit 분석 (CI 계산 포함)**
     try:
-        # GLM 모델링을 위한 데이터 준비
         df_glm = df[df['농도(mg/L)'] > 0].copy()
         
-        # Plotting 및 R-squared 계산을 위한 임시 Probit 변환
-        if not is_animal_test:
-            df_probit_check = dose_resp.copy()
-            df_probit_check['Log_Conc'] = np.log10(df_probit_check['농도(mg/L)'])
-            df_probit_check['Inhibition_adj'] = df_probit_check['Inhibition'].clip(0.001, 0.999)
-            df_probit_check['Probit'] = stats.norm.ppf(df_probit_check['Inhibition_adj'])
-            
-            # Grouped data for GLM fitting (using Gaussian for continuous data)
-            grouped_data = df_probit_check.copy()
-            
-            # Simple linregress for slope/intercept check before GLM
-            slope_lin, intercept_lin, r_val, _, _ = stats.linregress(df_probit_check['Log_Conc'], df_probit_check['Probit'])
-            r_squared = r_val ** 2
-            
-            model = sm.GLM(grouped_data['Probit'], sm.add_constant(grouped_data['Log_Conc']),
-                            family=families.Gaussian()).fit(maxiter=100, disp=False)
-            
-            intercept = model.params['const']
-            slope = model.params['Log_Conc']
-
-        else:
+        # GLM 모델링을 위한 데이터 준비
+        if is_animal_test:
             # 동물 시험: 이진 반응 (LC50/EC50) -> Binomial family
             df_glm['Log_Conc'] = np.log10(df_glm['농도(mg/L)'])
             
@@ -262,10 +241,14 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
                 Log_Conc=('Log_Conc', 'mean')
             ).reset_index()
             
-            # 모델 수렴 실패 조건 (모두 0 또는 모두 1 반응)
+            # ***안정화 로직: 100% 반응 극단값 조정 (CETIS 모방)***
+            is_100_percent = (grouped_data['Response'] == grouped_data['Total'])
+            grouped_data.loc[is_100_percent, 'Response'] = grouped_data.loc[is_100_percent, 'Total'] * 0.999
+            
+            # 모델 수렴 실패 조건
             if grouped_data['Response'].sum() == 0 or grouped_data['Response'].sum() == grouped_data['Total'].sum():
                 raise ValueError("All zero or all one response, Probit CI fail.")
-            
+                
             # GLM Probit Fit
             model = sm.GLM(grouped_data['Response'], sm.add_constant(grouped_data['Log_Conc']),
                             family=families.Binomial(), 
@@ -278,6 +261,22 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
             grouped_data['Probit'] = norm.ppf(grouped_data['Response'] / grouped_data['Total'])
             r_squared = np.corrcoef(grouped_data['Log_Conc'], grouped_data['Probit'])[0, 1]**2
 
+        else:
+            # 조류 시험: 연속형 데이터 (ErC50/EyC50) -> Gaussian family (Probit 변환을 선형 적합)
+            df_probit_check = dose_resp.copy()
+            df_probit_check['Log_Conc'] = np.log10(df_probit_check['농도(mg/L)'])
+            df_probit_check['Inhibition_adj'] = df_probit_check['Inhibition'].clip(0.001, 0.999)
+            df_probit_check['Probit'] = stats.norm.ppf(df_probit_check['Inhibition_adj'])
+            
+            grouped_data = df_probit_check.copy()
+            
+            model = sm.GLM(grouped_data['Probit'], sm.add_constant(grouped_data['Log_Conc']),
+                            family=families.Gaussian()).fit(maxiter=100, disp=False)
+                            
+            intercept = model.params['const']
+            slope = model.params['Log_Conc']
+            r_val = np.corrcoef(grouped_data['Log_Conc'], grouped_data['Probit'])[0, 1]
+            r_squared = r_val ** 2
 
         if r_squared < 0.6 or slope <= 0: 
              raise ValueError("Low Probit Fit")
@@ -298,9 +297,9 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         std_err_log_lc50 = np.sqrt(var_log_lc50_est)
         
         # 95% Confidence Limits (Z = 1.96)
-        z_score = norm.ppf(0.975)
-        log_lcl = log_lc50 - z_score * std_err_log_lc50
-        log_ucl = log_lc50 + z_score * std_err_log_lc50
+        z_score_95 = norm.ppf(0.975)
+        log_lcl = log_lc50 - z_score_95 * std_err_log_lc50
+        log_ucl = log_lc50 + z_score_95 * std_err_log_lc50
         
         lcl = 10**log_lcl
         ucl = 10**log_ucl
@@ -338,10 +337,18 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         method_used = "GLM Probit Analysis"
         
         # Plotting info
-        plot_x = grouped_data['Log_Conc']
-        plot_y = grouped_data['Probit']
-        plot_x_original = grouped_data['농도(mg/L)']
-        plot_y_original = grouped_data['Response'] / grouped_data['Total'] if is_animal_test else grouped_data['Inhibition']
+        if is_animal_test:
+             plot_x = grouped_data['Log_Conc']
+             plot_y = grouped_data['Probit']
+             plot_x_original = grouped_data['농도(mg/L)']
+             plot_y_original = grouped_data['Response'] / grouped_data['Total']
+
+        else:
+             plot_x = grouped_data['Log_Conc']
+             plot_y = grouped_data['Probit']
+             plot_x_original = grouped_data['Log_Conc'].apply(lambda x: 10**x) # Revert Log Conc to actual Conc
+             plot_y_original = grouped_data['Inhibition']
+
 
         plot_info = {
             'type': 'probit', 'x': plot_x, 'y': plot_y, 
@@ -399,7 +406,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
     return ec_lc_results, r_squared, method_used, plot_info
 
 # -----------------------------------------------------------------------------
-# [그래프 표시 함수] - (GLM 기반 데이터 로드에 맞게 수정)
+# [그래프 표시 함수] - (변경 없음)
 # -----------------------------------------------------------------------------
 def plot_ec_lc_curve(plot_info, label, ec_lc_results):
     fig, ax = plt.subplots(figsize=(8, 6))
@@ -434,7 +441,6 @@ def plot_ec_lc_curve(plot_info, label, ec_lc_results):
         ax_dr.scatter(plot_info['x_original'], plot_info['y_original'] * 100, 
                       label='Observed Data', color='blue', alpha=0.7)
         
-        # Probit Fit Line on Dose-Response Curve
         x_data_for_pred = plot_info['x_original']
         x_pred = np.linspace(min(x_data_for_pred), max(x_data_for_pred), 100)
         log_x_pred = np.log10(x_pred)
