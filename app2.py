@@ -10,15 +10,15 @@ from scipy.stats import norm
 from statsmodels.formula.api import ols
 
 # -----------------------------------------------------------------------------
-# [공통] 페이지 설정
+# [공통] 페이지 설정 - (변경 없음)
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="생태독성 전문 분석기 (Final)", page_icon="🧬", layout="wide")
 
 st.title("🧬 🧬 생태독성 전문 분석기 (Optimal Pro Ver.)")
 st.markdown("""
-이 앱은 **이전 CETIS 스타일 프로그램(app.py)의 모든 결과 표현**을 통합합니다.
-1. **ECx/LCx:** Probit 분석이 불안정할 경우, **ICPIN (Isotonic Regression + Bootstrap)** 방법을 사용하여 안정적인 95% 신뢰구간을 산출합니다.
-2. **NOEC/LOEC:** CETIS 순서도에 따라 Bonferroni t-test로 결과를 도출합니다.
+이 앱은 제공된 순서도를 따르는 **최적화된 자동 통계 분석 알고리즘**을 구현합니다.
+1. **NOEC/LOEC:** Bonferroni t-test로 대체하여 결과를 도출합니다.
+2. **ECx/LCx:** **GLM Probit**을 우선하며, 실패 시 **ICPIN + Bootstrap CI** 로직으로 전환되어 **안정적인 95% 신뢰구간**을 산출합니다.
 """)
 st.divider()
 
@@ -28,71 +28,46 @@ analysis_type = st.sidebar.radio(
 )
 
 # -----------------------------------------------------------------------------
-# [ICPIN + Bootstrap] CI 산출 로직 (app.py 로직 기반 재구현)
+# [ICPIN + Bootstrap] CI 산출 로직 (KeyError 방지)
 # -----------------------------------------------------------------------------
-def get_icpin_values_with_ci(df_resp, endpoint_col, n_boot=1000):
+def get_icpin_values_with_ci(df_resp, endpoint, n_boot=1000):
     """Linear Interpolation (ICPIN) + Bootstrapping을 사용하여 ECp 값과 CI 산출"""
     
-    # ICPIN은 Response Value (또는 Yield/Mu)를 사용해야 함
+    # df_resp에는 'Concentration'과 'Value' 컬럼이 있어야 함
     df_temp = df_resp.copy()
     
-    # Calculate Inhibition (Must be done before grouping)
-    if 'Inhibition' not in df_temp.columns:
-        if '총 개체수' in df_temp.columns:
-             # Binary data: Use response rate (Response/Total) 
-             df_temp['Inhibition'] = df_temp[endpoint_col] / df_temp['총 개체수']
-        else:
-             # Continuous data: Assumes inhibition rate (0 to 1) is pre-calculated
-             df_temp['Inhibition'] = (df_temp['Control_Mean'].iloc[0] - df_temp[endpoint_col]) / df_temp['Control_Mean'].iloc[0]
-             
-    # Tidy Dataframe for ICPIN (Grouping by Conc)
-    # ICp needs the raw endpoint values to resample from each group.
-    
-    x_raw = df_temp['농도(mg/L)'].unique()
-    groups = {c: df_temp[df_temp['농도(mg/L)'] == c][endpoint_col].values for c in x_raw}
-    
-    # 1. Calculate Mean Endpoint Value for the main fit
-    raw_means = df_temp.groupby('농도(mg/L)')[endpoint_col].mean()
+    # 여기서 '농도(mg/L)'를 찾는 로직 대신 'Concentration'을 사용
+    raw_means = df_temp.groupby('Concentration')[endpoint].mean()
+    x_raw = raw_means.index.values.astype(float)
     y_raw = raw_means.values
     
-    # Calculate Inhibition Rate from Mean Values (for plotting/reporting)
-    control_mean_value = y_raw[0]
-    inhibition_rates = (control_mean_value - y_raw) / control_mean_value
-    
-    # We invert the inhibition rates to get the 'Remaining Growth' for isotonic regression
-    remaining_growth = y_raw
-    
-    # Isotonic Regression (Assumes endpoint value decreases with conc. -> maximum accumulate inverted)
-    # The original ICPIN code uses isotonic regression on the ENDPOINT VALUE (not inhibition).
-    y_iso = np.maximum.accumulate(remaining_growth[::-1])[::-1]
+    # Isotonic Regression (단조성 유지)
+    y_iso = np.maximum.accumulate(y_raw[::-1])[::-1]
     
     try:
-        # Interpolate Concentration (X) given Remaining Growth (Y)
         interpolator = interp1d(y_iso, x_raw, kind='linear', bounds_error=False, fill_value=np.nan)
     except:
         interpolator = None
 
     def calc_icpin_ec(interp_func, level, control_val):
         if interp_func is None: return np.nan
-        # Target Y = Remaining Endpoint Value corresponding to Inhibition Level
         target_y = control_val * (1 - level/100) 
-        
-        # Extrapolation Check (ICPIN only works if target is within observed range)
-        if target_y > y_iso[0] or target_y < y_iso.min(): 
+        if target_y > y_iso.max() or target_y < y_iso.min(): 
             return np.nan
         
-        # Calculate ECx using the interpolated function
         return float(interp_func(target_y))
 
     ec_levels = np.arange(5, 100, 5) 
     main_results = {}
     
     # --- 1. Main Estimate Calculation ---
+    control_val = y_iso[0]
     for level in ec_levels:
-        main_results[level] = calc_icpin_ec(interpolator, level, control_mean_value)
+        main_results[level] = calc_icpin_ec(interpolator, level, control_val)
 
-    # --- 2. Bootstrap for CI (Must Resample Raw Data) ---
+    # --- 2. Bootstrap for CI ---
     boot_estimates = {l: [] for l in ec_levels}
+    groups = {c: df_temp[df_temp['Concentration']==c][endpoint].values for c in x_raw}
     
     for _ in range(n_boot):
         boot_y_means = []
@@ -123,28 +98,27 @@ def get_icpin_values_with_ci(df_resp, endpoint_col, n_boot=1000):
         val = main_results[level]
         boots = boot_estimates[level]
         
-        if np.isnan(val):
-            val_str = f"> {max_conc:.4f}" if level >= 50 else "n/a"
-            ci_str = "N/A"
+        val_str = f"{val:.4f}" if not np.isnan(val) else (f"> {max_conc:.4f}" if level >= 50 else "n/a")
+
+        if np.isnan(val) and level < 50:
+             ci_str = "n/a"
+        elif np.isnan(val) and level >= 50:
+             ci_str = "N/A (>Max)"
         elif len(boots) >= 20: 
-            val_str = f"{val:.4f}"
             lcl = np.percentile(boots, 2.5)
             ucl = np.percentile(boots, 97.5)
             ci_str = f"({lcl:.4f} ~ {ucl:.4f})"
         else:
-            val_str = f"{val:.4f}"
             ci_str = "N/C (Bootstrap Fail)"
         
         final_out[f'EC{level}'] = {'val': val_str, 'lcl': ci_str, 'ucl': ci_str}
         
-    return final_out, control_mean_value, inhibition_rates
-
+    return final_out, control_val, inhibition_rates
 
 # -----------------------------------------------------------------------------
 # [핵심 로직 1] 상세 통계 분석 및 가설 검정 (NOEC/LOEC) - (변경 없음)
 # -----------------------------------------------------------------------------
 def perform_detailed_stats(df, endpoint_col, endpoint_name):
-    # ... (perform_detailed_stats function - Bonferroni logic maintained) ...
     """
     상세 통계량을 출력하고, 정규성/등분산성 결과에 따라 
     적절한 검정(T-test, ANOVA, Kruskal)을 수행하여 NOEC/LOEC를 찾습니다.
@@ -333,7 +307,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         total = df.groupby('농도(mg/L)')['총 개체수'].mean()[dose_resp['농도(mg/L)']].values
         dose_resp['Inhibition'] = df.groupby('농도(mg/L)')[endpoint_col].mean()[dose_resp['농도(mg/L)']].values / total
         
-        # ICp/Probit을 위한 Inhibition Endpoint Column 추가
+        # ICPIN 로직을 위한 Inhibition Endpoint Column 추가
         df['Inhibition_Endpoint'] = df[endpoint_col] / df['총 개체수']
     else:
         total = df.groupby('농도(mg/L)')[endpoint_col].count()[dose_resp['농도(mg/L)']].values
@@ -344,7 +318,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
     r_squared = 0
     plot_info = {}
     ci_50_str = "N/C"
-    
+
     # **1순위: GLM Probit 분석 (CI 계산 포함)**
     try:
         df_glm = df[df['농도(mg/L)'] > 0].copy()
@@ -378,7 +352,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
             r_squared = np.corrcoef(grouped_data['Log_Conc'], grouped_data['Probit'])[0, 1]**2
 
         else:
-             # 조류 시험: 연속형 데이터 (ErC50/EyC50) -> Gaussian family (Probit 변환을 선형 적합)
+             # 조류 시험: 연속형 데이터 (ErC50/EyC50) -> Gaussian family
             df_probit_check = dose_resp.copy()
             df_probit_check['Log_Conc'] = np.log10(df_probit_check['농도(mg/L)'])
             df_probit_check['Inhibition_adj'] = df_probit_check['Inhibition'].clip(0.001, 0.999)
@@ -451,8 +425,8 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         if is_animal_test:
              plot_x = grouped_data['Log_Conc']
              plot_y = grouped_data['Probit']
-             plot_x_original = grouped_data['농도(mg/L)']
-             plot_y_original = grouped_data['Response'] / grouped_data['Total'] # Use adjusted response rate
+             plot_x_original = grouped_data['농도(mg/L)'] # Original Conc
+             plot_y_original = grouped_data['Response'] / grouped_data['Total'] # Original Response Rate
 
         else:
              plot_x = grouped_data['Log_Conc']
@@ -470,25 +444,21 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
     # **2순위: Linear Interpolation (ICPIN Bootstrap CI 구현)**
     except Exception as e:
         
-        st.warning(f"Probit 모델 실패. 이유: {e}")
+        st.warning(f"Probit 모델 실패. {e}")
         
         # ICPIN 로직에 맞게 DataFrame 준비
         df_icpin = df.copy()
         
-        # ICp/Bootstrap은 raw 데이터를 사용해야 하므로, Response Rate 기반으로 재구성
-        df_icpin = df_icpin.rename(columns={'농도(mg/L)': 'Concentration'})
+        # ***KeyError 방지 및 컬럼명 일치: ICPIN 로직에 맞게 컬럼명 변경***
+        df_icpin = df_icpin.rename(columns={'농도(mg/L)': 'Concentration'}) 
         df_icpin['Value'] = df_icpin[endpoint_col]
         
         if is_animal_test:
-            # Binary data: ICp는 Response/Total rate을 원함 (0~100%)
-            df_icpin['Value'] = df_icpin[endpoint_col] / df_icpin['총 개체수'] 
-            # ICPIN의 Isotonic Regression은 endpoint value (성장률 또는 생존율) 감소를 가정.
-            # Inhibition (1 - Rate)을 사용해야 함.
-            df_icpin['Value'] = 1 - df_icpin['Value'] 
+            # Binary data: ICp는 Inhibition (1 - Rate)을 필요로 함
+            df_icpin['Value'] = 1 - (df_icpin[endpoint_col] / df_icpin['총 개체수'])
         else:
-            # Continuous data: Inhibition value (e.g., yield) is already calculated in df
-            df_icpin['Value'] = df_icpin['Inhibition_Endpoint'] 
-
+            # Continuous data: Inhibition value (e.g., yield) is used as Value
+            df_icpin['Value'] = 1 - (df_icpin['Value'] / control_mean) 
 
         # ICp/Bootstrap CI 계산
         icpin_results, control_mean_value, inhibition_rates = get_icpin_values_with_ci(df_icpin, 'Value')
@@ -510,7 +480,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         # Plotting info (ICp 스타일 유지)
         plot_info = {'type': 'linear', 'data': dose_resp, 'r_squared': r_squared, 
                      'x_original': dose_resp['농도(mg/L)'].values, 
-                     'y_original': inhibition_rates} # Use inhibition rates for plotting
+                     'y_original': inhibition_rates}
 
     return ec_lc_results, r_squared, method_used, plot_info
 
@@ -570,19 +540,19 @@ def plot_ec_lc_curve(plot_info, label, ec_lc_results):
         st.pyplot(fig_dr)
         
     else:
-        # Linear Interpolation 그래프 (ICPIN)
+        # Linear Interpolation 그래프
         fig, ax = plt.subplots(figsize=(8, 6))
         
         x_data = plot_info['x_original']
-        y_data = plot_info['y_original'] # This is Inhibition Rate (0 to 1)
+        y_data = plot_info['y_original']
         
-        ax.plot(x_data, y_data * 100, marker='o', linestyle='-', color='blue', label='Data Points')
+        ax.plot(x_data, y_data * 100, marker='o', linestyle='-', color='blue', label='Linear Interp Data')
         ax.axhline(50, color='red', linestyle='--', label='50% Cutoff')
         
         ec50_entry = [res for res in ec_lc_results['value'] if ec_lc_results['p'][ec_lc_results['value'].index(res)] == 50]
-        ec50_val = ec50_entry[0] if ec50_entry and ec50_entry[0] != '-' and ec50_entry[0][0] != '>' else None
+        ec50_val = ec50_entry[0] if ec50_entry and ec50_entry[0] != '-' and ec50_entry[0][0] != '>' and ec50_entry[0] != 'n/a' else None
         
-        if ec50_val and ec50_val != 'n/a':
+        if ec50_val:
             ax.axvline(float(ec50_val), color='green', linestyle='--', linewidth=1, label=f'{label} ({ec50_val})')
         
         ax.set_title(f'{label} Dose-Response Curve (ICPIN/Bootstrap)')
