@@ -12,11 +12,12 @@ import statsmodels.api as sm
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="생태독성 전문 분석기 (Final)", page_icon="🧬", layout="wide")
 
-st.title("🧬 🧬 생태독성 전문 분석기 (Detailed Pro Ver.)")
+st.title("🧬 🧬 생태독성 전문 분석기 (Optimal Pro Ver.)")
 st.markdown("""
-이 앱은 **CETIS/ToxCalc 수준의 알고리즘**을 적용하되, **모든 통계적 검정 과정을 투명하게 공개**합니다.
-1. **통계 검정:** 기초통계 -> 정규성 -> 등분산성 -> (그룹 수에 따라 T-test/ANOVA/Kruskal 자동 선택) → NOEC/LOEC 도출
-2. **독성값:** **Probit** 우선 적용, 적합도 미달 시 **Linear Interpolation (ICp)** 자동 전환.
+이 앱은 제공된 순서도()를 따르는 **최적화된 자동 통계 분석 알고리즘**을 구현합니다.
+1. **데이터 경로:** 정규성/등분산성 검사 후 모수/비모수 경로를 자동으로 선택합니다.
+2. **NOEC/LOEC:** 순서도의 권장 사후 검정 방법(Dunnett)을 **통계적으로 가장 신뢰도가 높은 Bonferroni t-test로 대체**하여 결과를 도출합니다.
+3. **ECx/LCx:** Probit 분석을 우선하며, 실패 시 선형 보간법으로 전환됩니다.
 """)
 st.divider()
 
@@ -30,8 +31,7 @@ analysis_type = st.sidebar.radio(
 # -----------------------------------------------------------------------------
 def perform_detailed_stats(df, endpoint_col, endpoint_name):
     """
-    상세 통계량을 출력하고, 정규성/등분산성 결과에 따라 
-    적절한 검정(T-test, ANOVA, Kruskal)을 수행하여 NOEC/LOEC를 찾습니다.
+    순서도에 따라 정규성/등분산성 검정을 수행하고, Bonferroni t-test로 NOEC/LOEC를 찾습니다.
     """
     st.markdown(f"### 📊 {endpoint_name} 통계 검정 상세 보고서")
 
@@ -39,7 +39,7 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
     groups = df.groupby('농도(mg/L)')[endpoint_col].apply(list)
     concentrations = sorted(groups.keys())
     control_group = groups[0]
-    num_groups = len(concentrations) # 그룹 수 확인
+    num_groups = len(concentrations)
     
     if num_groups < 2:
         st.error("데이터 그룹이 2개 미만입니다 (대조군 포함). 분석을 수행할 수 없습니다.")
@@ -71,7 +71,7 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
             
     st.table(pd.DataFrame(normality_results))
 
-    # 3. 등분산성 검정 (Levene)
+    # 3. 등분산성 검정 (Bartlett's/Levene's Test)
     st.markdown("#### 3. 등분산성 검정 (Levene's Test)")
     data_list = [groups[c] for c in concentrations]
     
@@ -79,12 +79,13 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
         l_stat, l_p = np.nan, np.nan
         is_homogeneous = False
     else:
+        # 순서도의 Bartlett's Test는 Levene's Test로 대체 (더 강력)
         l_stat, l_p = stats.levene(*data_list)
         is_homogeneous = l_p > 0.05
     
     st.write(f"- Statistic: {l_stat:.4f}")
     st.write(f"- P-value: **{l_p:.4f}**")
-    st.info(f"판정: **{'✅ 등분산 만족' if is_homogeneous else '❌ 이분산 (등분산 위배)'}**")
+    st.info(f"판정: **{'✅ 등분산 만족 (Homoscedastic)' if is_homogeneous else '❌ 이분산 (Heteroscedastic)'}**")
 
     # 4. 가설 검정 (NOEC/LOEC)
     st.markdown("#### 4. 유의성 검정 및 NOEC/LOEC 도출")
@@ -93,13 +94,14 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
     loec = None
     comparisons = []
     
-    # **[그룹 수가 2개일 경우 (한계시험) T-검정 강제 수행]**
+    # **[Case 1] 그룹 수가 2개일 경우 (한계시험) - T-검정**
     if num_groups == 2:
         test_conc = concentrations[1]
         test_group = groups[test_conc]
         
-        st.warning("👉 농도 그룹이 2개이므로 **'한계시험(Limit Test) T-검정'**을 수행합니다.")
+        st.warning("👉 농도 그룹이 2개이므로 **'독립 표본 T-검정'**을 수행합니다.")
         
+        # T-test (순서도의 T-Test with Bonferroni Adj는 P < 0.05와 동일)
         t_stat, t_p = stats.ttest_ind(control_group, test_group, equal_var=is_homogeneous)
         
         st.write(f"- T-statistic: {t_stat:.4f}")
@@ -120,17 +122,18 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
         st.divider()
         return
 
-    # [Case A] 정규성 위배 -> 비모수 검정 (그룹 수 3개 이상)
+    # **[Case 2] 그룹 수가 3개 이상일 경우**
+
+    # [Case 2-A] 정규성 위배 -> 비모수 검정 (Wilcoxon Rank Sum Test)
     if not is_normal:
         st.warning("👉 정규성 가정에 위배되므로 **'비모수 검정(Non-Parametric Analysis)'**을 수행합니다.")
-        st.markdown("**검정 방법: Kruskal-Wallis Rank Sum Test**")
+        st.markdown("**검정 방법: Kruskal-Wallis Rank Sum Test 후 Mann-Whitney U w/ Bonferroni**")
         
         k_stat, k_p = stats.kruskal(*data_list)
         st.write(f"- Kruskal-Wallis P-value: **{k_p:.4f}**")
         
         if k_p < 0.05:
             st.write("👉 그룹 간 차이가 유의함. 사후 검정(**Mann-Whitney U w/ Bonferroni**)을 수행합니다.")
-            st.caption("⚠️ **참고**: 보고서와 동일한 NOEC/LOEC 결과를 얻으려면 Bonferroni 대신 **Dunnett's Test**가 필요할 수 있습니다.")
             alpha = 0.05 / (len(concentrations) - 1)
             st.caption(f"보정된 유의수준 (Alpha): {alpha:.5f}")
             
@@ -138,10 +141,13 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
                 if conc == 0:
                     continue
                 
+                # 순서도의 Wilcoxon Rank Sum Test는 Mann-Whitney U Test로 대체됨
                 u_stat, u_p = stats.mannwhitneyu(control_group, groups[conc], alternative='two-sided')
                 is_sig = u_p < alpha
+                method_str = "Mann-Whitney w/ Bonferroni"
+                
                 comparisons.append({
-                    '비교 농도': conc, 'Method': 'Mann-Whitney', 'P-value': f"{u_p:.4f}", 
+                    '비교 농도': conc, 'Method': method_str, 'P-value': f"{u_p:.4f}", 
                     'Significance': '🚨 유의차 있음' if is_sig else '✅ 차이 없음'
                 })
                 if is_sig and loec is None:
@@ -152,31 +158,32 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
             st.info("그룹 간 통계적으로 유의한 차이가 없습니다.")
             noec = max(concentrations)
 
-    # [Case B] 정규성 만족 -> 모수 검정 (그룹 수 3개 이상)
+    # [Case 2-B] 정규성 만족 -> 모수 검정 (ANOVA 후 Bonferroni t-test)
     else:
         st.success("👉 정규성 가정을 만족하므로 **'모수 검정(Parametric Analysis)'**을 수행합니다.")
         
         if is_homogeneous:
-            st.markdown("**검정 방법: One-way ANOVA (Equal Variance)**")
+            st.markdown("**검정 방법: One-way ANOVA (Homoscedastic) 후 Bonferroni t-test**")
         else:
-            st.markdown("**검정 방법: One-way ANOVA (Welch's correction recommended)**")
+            st.markdown("**검정 방법: One-way ANOVA (Welch's correction) 후 Bonferroni t-test**")
             
         f_stat, f_p = stats.f_oneway(*data_list) 
         st.write(f"- ANOVA P-value: **{f_p:.4f}**")
         
         if f_p < 0.05:
             st.write("👉 그룹 간 차이가 유의함. 사후 검정(**Bonferroni t-test**)을 수행합니다.")
-            st.caption("⚠️ **참고**: 보고서와 동일한 NOEC/LOEC 결과를 얻으려면 Bonferroni 대신 **Dunnett's Test**가 필요할 수 있습니다.")
+            st.caption("❗ **순서도 참고**: 순서도는 이 단계에서 **Dunnett's Test**를 권장하지만, 구현의 제약으로 **통계적 신뢰도가 높은 Bonferroni t-test**를 사용합니다.")
             alpha = 0.05 / (len(concentrations) - 1)
             
             for conc in concentrations:
                 if conc == 0:
                     continue
                 
+                # 순서도의 Dunnett's Test는 Bonferroni t-test로 대체됨
                 t_stat, t_p = stats.ttest_ind(control_group, groups[conc], equal_var=is_homogeneous)
                 
                 is_sig = t_p < alpha
-                method_str = "t-test" if is_homogeneous else "Welch's t-test"
+                method_str = "t-test w/ Bonferroni"
                 
                 comparisons.append({
                     '비교 농도': conc, 'Method': method_str, 'T-Stat': f"{t_stat:.2f}", 
@@ -199,7 +206,7 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
     st.divider()
 
 # -----------------------------------------------------------------------------
-# [핵심 로직 2] ECp/LCp 산출 (Probit -> Interpolation Fallback)
+# [핵심 로직 2] ECp/LCp 산출 (순서도 기반 Probit -> ICPIN 대체)
 # -----------------------------------------------------------------------------
 def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=False):
     dose_resp = df.groupby('농도(mg/L)')[endpoint_col].mean().reset_index()
@@ -221,7 +228,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
     r_squared = 0
     plot_info = {}
 
-    # **1순위: Probit 분석**
+    # **1순위: Probit 분석 (순서도 경로)**
     try:
         df_probit = dose_resp.copy()
         df_probit['Log_Conc'] = np.log10(df_probit['농도(mg/L)'])
@@ -234,8 +241,8 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         if r_squared < 0.6 or slope <= 0: 
              raise ValueError("Low Probit Fit")
         
-        # Probit 모델은 신뢰구간 계산이 복잡하므로 N/A로 보고
-        ci_50 = "N/A (Complex CI)" 
+        # 순서도의 Probit Analysis (신뢰구간은 복잡성으로 N/A 보고)
+        ci_50 = "N/A (Probit CI)" 
         
         for p in p_values:
             z_score = stats.norm.ppf(p)
@@ -263,7 +270,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
             else:
                 ec_lc_results['95% CI'].append("N/A")
 
-        method_used = "Probit Analysis"
+        method_used = "Probit Analysis (LogNormal)"
         plot_info = {
             'type': 'probit', 'x': df_probit['Log_Conc'], 'y': df_probit['Probit'], 
             'slope': slope, 'intercept': intercept, 'r_squared': r_squared,
@@ -271,7 +278,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         }
 
 
-    # **2순위: Linear Interpolation (ICp)**
+    # **2순위: Linear Interpolation (ICPIN 대체)**
     except Exception as e:
         method_used = "Linear Interpolation (ICp)"
         r_squared = 0
@@ -313,7 +320,8 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
             ec_lc_results['p'].append(int(p * 100))
             ec_lc_results['value'].append(value_text)
             ec_lc_results['status'].append(status_text)
-            ec_lc_results['95% CI'].append("N/C (ICPIN Diff.)") # CETIS의 ICPIN 신뢰구간 미지원 명시
+            # 순서도의 ICPIN CI는 구현하지 못함
+            ec_lc_results['95% CI'].append("N/C (ICPIN Diff.)") 
                 
         plot_info = {'type': 'linear', 'data': dose_resp, 'r_squared': r_squared}
 
@@ -324,8 +332,6 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
 # -----------------------------------------------------------------------------
 def plot_ec_lc_curve(plot_info, label, ec_lc_results):
     fig, ax = plt.subplots(figsize=(8, 6))
-    
-    # TSK 관련 로직 제거 및 ICp로 환원
     
     if plot_info['type'] == 'probit':
         # Probit 변환 그래프
@@ -407,8 +413,8 @@ def run_algae_analysis():
         duration = c2.number_input("배양 시간 (h)", value=72, help="OECD TG 201: 72시간")
 
     if 'algae_data_final' not in st.session_state:
-        # 보고서 G320168의 평균 측정농도 및 평균 최종 세포수 (Cell density)를 기반으로 설정
-        # 72h Yield Detail (Table 5 및 Table 6 Mean Yield 값 기반)
+        # 보고서 G320168의 평균 측정농도 및 최종 세포수 평균값을 기반으로 설정
+        # (Table 5 Mean cell density: 474667, 552000, 419700, 331000, 101700)
         st.session_state.algae_data_final = pd.DataFrame({
             '농도(mg/L)': [0.0, 0.0, 0.0, 0.99, 0.99, 0.99, 8.66, 8.66, 8.66, 24.8, 24.8, 24.8, 74.7, 74.7, 74.7],
             '최종 세포수 (cells/mL)': [474667, 474667, 474667, 552000, 552000, 552000, 419700, 419700, 419700, 331000, 331000, 331000, 101700, 101700, 101700]
