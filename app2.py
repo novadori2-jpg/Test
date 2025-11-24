@@ -14,7 +14,10 @@ st.set_page_config(page_title="생태독성 전문 분석기 (Final)", page_icon
 
 st.title("🧬 🧬 생태독성 전문 분석기 (Optimal Pro Ver.)")
 st.markdown("""
-이 앱은 제공된 순서도()를 따르는 **최적화된 자동 통계 분석 알고리즘**을 구현합니다.
+이 앱은 제공된 순서도(
+
+[Image of a flow chart showing statistical methods for toxicity data analysis]
+)를 따르는 **최적화된 자동 통계 분석 알고리즘**을 구현합니다.
 1. **데이터 경로:** 정규성/등분산성 검사 후 모수/비모수 경로를 자동으로 선택합니다.
 2. **NOEC/LOEC:** 순서도의 권장 사후 검정 방법(Dunnett)을 **통계적으로 가장 신뢰도가 높은 Bonferroni t-test로 대체**하여 결과를 도출합니다.
 3. **ECx/LCx:** Probit 분석을 우선하며, 실패 시 선형 보간법으로 전환됩니다.
@@ -27,11 +30,12 @@ analysis_type = st.sidebar.radio(
 )
 
 # -----------------------------------------------------------------------------
-# [핵심 로직 1] 상세 통계 분석 및 가설 검정 (NOEC/LOEC)
+# [핵심 로직 1] 상세 통계 분석 및 가설 검정 (NOEC/LOEC) - (조류 분석 전용으로 유지)
 # -----------------------------------------------------------------------------
 def perform_detailed_stats(df, endpoint_col, endpoint_name):
     """
-    순서도에 따라 정규성/등분산성 검정을 수행하고, Bonferroni t-test로 NOEC/LOEC를 찾습니다.
+    상세 통계량을 출력하고, 정규성/등분산성 결과에 따라 
+    적절한 검정(T-test, ANOVA, Kruskal)을 수행하여 NOEC/LOEC를 찾습니다.
     """
     st.markdown(f"### 📊 {endpoint_name} 통계 검정 상세 보고서")
 
@@ -39,7 +43,7 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
     groups = df.groupby('농도(mg/L)')[endpoint_col].apply(list)
     concentrations = sorted(groups.keys())
     control_group = groups[0]
-    num_groups = len(concentrations)
+    num_groups = len(concentrations) # 그룹 수 확인
     
     if num_groups < 2:
         st.error("데이터 그룹이 2개 미만입니다 (대조군 포함). 분석을 수행할 수 없습니다.")
@@ -71,7 +75,7 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
             
     st.table(pd.DataFrame(normality_results))
 
-    # 3. 등분산성 검정 (Bartlett's/Levene's Test)
+    # 3. 등분산성 검정 (Levene)
     st.markdown("#### 3. 등분산성 검정 (Levene's Test)")
     data_list = [groups[c] for c in concentrations]
     
@@ -79,7 +83,6 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
         l_stat, l_p = np.nan, np.nan
         is_homogeneous = False
     else:
-        # 순서도의 Bartlett's Test는 Levene's Test로 대체 (더 강력)
         l_stat, l_p = stats.levene(*data_list)
         is_homogeneous = l_p > 0.05
     
@@ -101,7 +104,6 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
         
         st.warning("👉 농도 그룹이 2개이므로 **'독립 표본 T-검정'**을 수행합니다.")
         
-        # T-test (순서도의 T-Test with Bonferroni Adj는 P < 0.05와 동일)
         t_stat, t_p = stats.ttest_ind(control_group, test_group, equal_var=is_homogeneous)
         
         st.write(f"- T-statistic: {t_stat:.4f}")
@@ -141,7 +143,6 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
                 if conc == 0:
                     continue
                 
-                # 순서도의 Wilcoxon Rank Sum Test는 Mann-Whitney U Test로 대체됨
                 u_stat, u_p = stats.mannwhitneyu(control_group, groups[conc], alternative='two-sided')
                 is_sig = u_p < alpha
                 method_str = "Mann-Whitney w/ Bonferroni"
@@ -172,14 +173,13 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
         
         if f_p < 0.05:
             st.write("👉 그룹 간 차이가 유의함. 사후 검정(**Bonferroni t-test**)을 수행합니다.")
-            st.caption("❗ **순서도 참고**: 순서도는 이 단계에서 **Dunnett's Test**를 권장하지만, 구현의 제약으로 **통계적 신뢰도가 높은 Bonferroni t-test**를 사용합니다.")
+            st.caption("❗ **순서도 참고**: 순서도는 이 단계에서 Dunnett's Test를 권장하지만, 구현의 제약으로 **통계적 신뢰도가 높은 Bonferroni t-test**를 사용합니다.")
             alpha = 0.05 / (len(concentrations) - 1)
             
             for conc in concentrations:
                 if conc == 0:
                     continue
                 
-                # 순서도의 Dunnett's Test는 Bonferroni t-test로 대체됨
                 t_stat, t_p = stats.ttest_ind(control_group, groups[conc], equal_var=is_homogeneous)
                 
                 is_sig = t_p < alpha
@@ -206,7 +206,7 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
     st.divider()
 
 # -----------------------------------------------------------------------------
-# [핵심 로직 2] ECp/LCp 산출 (순서도 기반 Probit -> ICPIN 대체)
+# [핵심 로직 2] ECp/LCp 산출 (Probit -> Interpolation Fallback)
 # -----------------------------------------------------------------------------
 def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=False):
     dose_resp = df.groupby('농도(mg/L)')[endpoint_col].mean().reset_index()
@@ -228,7 +228,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
     r_squared = 0
     plot_info = {}
 
-    # **1순위: Probit 분석 (순서도 경로)**
+    # **1순위: Probit 분석**
     try:
         df_probit = dose_resp.copy()
         df_probit['Log_Conc'] = np.log10(df_probit['농도(mg/L)'])
@@ -242,7 +242,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
              raise ValueError("Low Probit Fit")
         
         # 순서도의 Probit Analysis (신뢰구간은 복잡성으로 N/A 보고)
-        ci_50 = "N/A (Probit CI)" 
+        ci_50 = "N/A (Complex CI)" 
         
         for p in p_values:
             z_score = stats.norm.ppf(p)
@@ -402,7 +402,7 @@ def plot_ec_lc_curve(plot_info, label, ec_lc_results):
 
 
 # -----------------------------------------------------------------------------
-# [분석 실행 함수] 조류 (Algae)
+# [분석 실행 함수] 조류 (Algae) - NOEC/LOEC 포함
 # -----------------------------------------------------------------------------
 def run_algae_analysis():
     st.header("🟢 조류 성장저해 시험 (OECD TG 201)")
@@ -413,8 +413,6 @@ def run_algae_analysis():
         duration = c2.number_input("배양 시간 (h)", value=72, help="OECD TG 201: 72시간")
 
     if 'algae_data_final' not in st.session_state:
-        # 보고서 G320168의 평균 측정농도 및 최종 세포수 평균값을 기반으로 설정
-        # (Table 5 Mean cell density: 474667, 552000, 419700, 331000, 101700)
         st.session_state.algae_data_final = pd.DataFrame({
             '농도(mg/L)': [0.0, 0.0, 0.0, 0.99, 0.99, 0.99, 8.66, 8.66, 8.66, 24.8, 24.8, 24.8, 74.7, 74.7, 74.7],
             '최종 세포수 (cells/mL)': [474667, 474667, 474667, 552000, 552000, 552000, 419700, 419700, 419700, 331000, 331000, 331000, 101700, 101700, 101700]
@@ -533,7 +531,7 @@ def run_algae_analysis():
             show_results('수율', '수율', 'EyC')
 
 # -----------------------------------------------------------------------------
-# [분석 실행 함수] 어류/물벼룩
+# [분석 실행 함수] 물벼룩/어류 - NOEC/LOEC 분석 제외
 # -----------------------------------------------------------------------------
 def run_animal_analysis(test_name, label):
     st.header(f"{test_name}")
@@ -558,11 +556,12 @@ def run_animal_analysis(test_name, label):
     if st.button("상세 분석 실행"):
         df = df_input.copy()
         
-        # NOEC/LOEC 분석
-        perform_detailed_stats(df, '반응 수', '반응 수')
-        st.divider()
+        # NOEC/LOEC 분석 단계 (perform_detailed_stats)를 건너뜁니다.
+        # st.subheader("📊 NOEC/LOEC 분석 결과")
+        # perform_detailed_stats(df, '반응 수', '반응 수') 
+        # st.divider()
         
-        # ECp/LCp 산출 및 그래프 출력
+        # ECp/LCp 산출 및 그래프 출력에 집중합니다.
         ec_lc_results, r2, method, plot_info = calculate_ec_lc_range(df, '반응 수', 0, label, is_animal_test=True)
         
         st.subheader(f"📊 {label} 범위 산출 결과")
