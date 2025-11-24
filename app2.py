@@ -28,7 +28,7 @@ analysis_type = st.sidebar.radio(
 )
 
 # -----------------------------------------------------------------------------
-# [ICPIN + Bootstrap] CI 산출 로직 (KeyError 방지)
+# [ICPIN + Bootstrap] CI 산출 로직 (KeyError 방지 및 변수 정의 완료)
 # -----------------------------------------------------------------------------
 def get_icpin_values_with_ci(df_resp, endpoint, n_boot=1000):
     """Linear Interpolation (ICPIN) + Bootstrapping을 사용하여 ECp 값과 CI 산출"""
@@ -36,7 +36,6 @@ def get_icpin_values_with_ci(df_resp, endpoint, n_boot=1000):
     # df_resp에는 'Concentration'과 'Value' 컬럼이 있어야 함
     df_temp = df_resp.copy()
     
-    # 여기서 '농도(mg/L)'를 찾는 로직 대신 'Concentration'을 사용
     raw_means = df_temp.groupby('Concentration')[endpoint].mean()
     x_raw = raw_means.index.values.astype(float)
     y_raw = raw_means.values
@@ -51,7 +50,7 @@ def get_icpin_values_with_ci(df_resp, endpoint, n_boot=1000):
 
     def calc_icpin_ec(interp_func, level, control_val):
         if interp_func is None: return np.nan
-        target_y = control_val * (1 - level/100) 
+        target_y = control_val * (1 - level/100)
         if target_y > y_iso.max() or target_y < y_iso.min(): 
             return np.nan
         
@@ -94,6 +93,9 @@ def get_icpin_values_with_ci(df_resp, endpoint, n_boot=1000):
     final_out = {}
     max_conc = x_raw.max()
     
+    # ***추가: inhibition_rates 계산***
+    inhibition_rates = (control_val - y_raw) / control_val
+    
     for level in ec_levels:
         val = main_results[level]
         boots = boot_estimates[level]
@@ -109,11 +111,12 @@ def get_icpin_values_with_ci(df_resp, endpoint, n_boot=1000):
             ucl = np.percentile(boots, 97.5)
             ci_str = f"({lcl:.4f} ~ {ucl:.4f})"
         else:
+            val_str = f"{val:.4f}"
             ci_str = "N/C (Bootstrap Fail)"
         
         final_out[f'EC{level}'] = {'val': val_str, 'lcl': ci_str, 'ucl': ci_str}
         
-    return final_out, control_val, inhibition_rates
+    return final_out, control_val, inhibition_rates # UnboundLocalError 해결
 
 # -----------------------------------------------------------------------------
 # [핵심 로직 1] 상세 통계 분석 및 가설 검정 (NOEC/LOEC) - (변경 없음)
@@ -425,8 +428,8 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         if is_animal_test:
              plot_x = grouped_data['Log_Conc']
              plot_y = grouped_data['Probit']
-             plot_x_original = grouped_data['농도(mg/L)'] # Original Conc
-             plot_y_original = grouped_data['Response'] / grouped_data['Total'] # Original Response Rate
+             plot_x_original = grouped_data['농도(mg/L)'] 
+             plot_y_original = grouped_data['Response'] / grouped_data['Total']
 
         else:
              plot_x = grouped_data['Log_Conc']
@@ -449,8 +452,8 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         # ICPIN 로직에 맞게 DataFrame 준비
         df_icpin = df.copy()
         
-        # ***KeyError 방지 및 컬럼명 일치: ICPIN 로직에 맞게 컬럼명 변경***
-        df_icpin = df_icpin.rename(columns={'농도(mg/L)': 'Concentration'}) 
+        # ***KeyError 방지 및 컬럼명 일치: ICPIN 로직이 요구하는 컬럼명으로 변경***
+        df_icpin = df_icpin.rename(columns={'농도(mg/L)': 'Concentration'})
         df_icpin['Value'] = df_icpin[endpoint_col]
         
         if is_animal_test:
@@ -546,7 +549,7 @@ def plot_ec_lc_curve(plot_info, label, ec_lc_results):
         x_data = plot_info['x_original']
         y_data = plot_info['y_original']
         
-        ax.plot(x_data, y_data * 100, marker='o', linestyle='-', color='blue', label='Linear Interp Data')
+        ax.plot(x_data, y_data * 100, marker='o', linestyle='-', color='blue', label='Data Points')
         ax.axhline(50, color='red', linestyle='--', label='50% Cutoff')
         
         ec50_entry = [res for res in ec_lc_results['value'] if ec_lc_results['p'][ec_lc_results['value'].index(res)] == 50]
