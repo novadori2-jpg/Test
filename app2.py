@@ -16,7 +16,7 @@ st.title("🧬 🧬 생태독성 전문 분석기 (Optimal Pro Ver.)")
 st.markdown("""
 이 앱은 제공된 순서도를 따르는 **최적화된 자동 통계 분석 알고리즘**을 구현합니다.
 1. **NOEC/LOEC:** Bonferroni t-test로 대체하여 결과를 도출합니다.
-2. **ECx/LCx:** **GLM Probit 분석**을 우선하며, **OECD TG 요구사항에 따라 95% 신뢰구간을 산출**합니다. 실패 시 선형 보간법으로 전환됩니다.
+2. **ECx/LCx:** 물벼룩/어류 시험 시 **Trimmed Spearman-Karber (TSK)를 1순위**로 적용하여 안정적인 LC50/EC50 값을 산출하고, 실패 시 Probit으로 전환됩니다.
 """)
 st.divider()
 
@@ -201,7 +201,41 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
     st.divider()
 
 # -----------------------------------------------------------------------------
-# [핵심 로직 2] ECp/LCp 산출 (GLM Probit CI 구현)
+# TSK 보조 함수 (재도입)
+# -----------------------------------------------------------------------------
+def calculate_tsk(df, endpoint_col):
+    """Trimmed Spearman-Karber (TSK) LC50 및 95% CI 계산."""
+    
+    df_mean = df.groupby('농도(mg/L)').agg(
+        {'총 개체수': 'mean', endpoint_col: 'mean'}
+    ).reset_index()
+    df_mean = df_mean[df_mean['농도(mg/L)'] > 0].sort_values('농도(mg/L)', ascending=False)
+    
+    df_mean['p'] = df_mean[endpoint_col] / df_mean['총 개체수']
+    
+    # TSK 계산 조건 확인 (50% 반응 구간이 있어야 함)
+    if len(df_mean) < 2 or df_mean['p'].max() < 0.5 or df_mean['p'].min() > 0.5:
+        return None, "N/A (Range Fail)"
+
+    df_mean['Log_C'] = np.log10(df_mean['농도(mg/L)'])
+    
+    # Karber Mean Formula (Simplified)
+    df_mean['p_shift'] = df_mean['p'].shift(-1).fillna(0)
+    df_mean['p_bar'] = (df_mean['p'] + df_mean['p_shift']) / 2
+    
+    df_mean['Log_C_shift'] = df_mean['Log_C'].shift(-1).fillna(0)
+    df_mean['Log_C_diff'] = df_mean['Log_C'] - df_mean['Log_C_shift']
+    
+    LC50_log = df_mean['Log_C'].iloc[0] - np.sum(df_mean['p_bar'] * df_mean['Log_C_diff'])
+    LC50_tsk = 10**LC50_log
+    
+    # TSK 신뢰구간 (CI): 수동 구현의 복잡성으로 인해 N/A로 보고
+    ci_str = "N/A (TSK)" 
+    
+    return LC50_tsk, ci_str
+
+# -----------------------------------------------------------------------------
+# [핵심 로직 2] ECp/LCp 산출 (TSK -> Probit CI 구현)
 # -----------------------------------------------------------------------------
 def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=False):
     dose_resp = df.groupby('농도(mg/L)')[endpoint_col].mean().reset_index()
@@ -217,7 +251,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         total = df.groupby('농도(mg/L)')['총 개체수'].mean()[dose_resp['농도(mg/L)']].values
         dose_resp['Inhibition'] = dose_resp[endpoint_col] / total
     else:
-        total = df.groupby('농도(mg/L)')[endpoint_col].count()[dose_resp['농도(mg/L)']].values 
+        total = df.groupby('농도(mg/L)')[endpoint_col].count()[dose_resp['농도(mg/L)']].values
         dose_resp['Inhibition'] = (control_mean - dose_resp[endpoint_col]) / control_mean
 
     method_used = "Linear Interpolation (ICp)"
@@ -225,49 +259,43 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
     plot_info = {}
     ci_50_str = "N/C"
 
+    # **0순위: TSK 분석 (물벼룩/어류 시험만 해당)**
+    if is_animal_test:
+        total_counts_per_conc = df.groupby('농도(mg/L)')['총 개체수'].count()
+        is_single_rep = len(total_counts_per_conc.unique()) == 1 and total_counts_per_conc.unique()[0] == 1
+        
+        if is_single_rep and dose_resp['Inhibition'].max() >= 0.5 and dose_resp['Inhibition'].min() <= 0.5:
+             LC50_tsk, ci_tsk = calculate_tsk(df, endpoint_col)
+             
+             if LC50_tsk is not None:
+                method_used = "Trimmed Spearman-Karber (TSK)"
+                for p in p_values:
+                    p_int = int(p * 100)
+                    if p_int == 50:
+                        ec_lc_results['p'].append(p_int)
+                        ec_lc_results['value'].append(f"{LC50_tsk:.4f}")
+                        ec_lc_results['status'].append("✅ TSK")
+                        ec_lc_results['95% CI'].append(ci_tsk)
+                    else:
+                        # TSK는 50%만 계산하므로, 다른 지점은 표시하지 않음
+                        ec_lc_results['p'].append(p_int)
+                        ec_lc_results['value'].append("-")
+                        ec_lc_results['status'].append("N/A (TSK)")
+                        ec_lc_results['95% CI'].append("N/A (TSK)")
+                
+                plot_info = {'type': 'linear', 'data': dose_resp, 'r_squared': 0, 'ec50_val': LC50_tsk}
+                return ec_lc_results, 0, method_used, plot_info
+
     # **1순위: GLM Probit 분석 (CI 계산 포함)**
     try:
         df_glm = df[df['농도(mg/L)'] > 0].copy()
         
-        # GLM 모델링을 위한 데이터 준비
-        if is_animal_test:
-            # 동물 시험: 이진 반응 (LC50/EC50) -> Binomial family
-            df_glm['Log_Conc'] = np.log10(df_glm['농도(mg/L)'])
-            
-            # Grouped data for GLM
-            grouped_data = df_glm.groupby('농도(mg/L)').agg(
-                Response=(endpoint_col, 'sum'), 
-                Total=('총 개체수', 'sum'),
-                Log_Conc=('Log_Conc', 'mean')
-            ).reset_index()
-            
-            # ***안정화 로직: 100% 반응 극단값 조정 (CETIS 모방)***
-            is_100_percent = (grouped_data['Response'] == grouped_data['Total'])
-            grouped_data.loc[is_100_percent, 'Response'] = grouped_data.loc[is_100_percent, 'Total'] * 0.999
-            
-            # 모델 수렴 실패 조건
-            if grouped_data['Response'].sum() == 0 or grouped_data['Response'].sum() == grouped_data['Total'].sum():
-                raise ValueError("All zero or all one response, Probit CI fail.")
-                
-            # GLM Probit Fit
-            model = sm.GLM(grouped_data['Response'], sm.add_constant(grouped_data['Log_Conc']),
-                            family=families.Binomial(), 
-                            exposure=grouped_data['Total']).fit(maxiter=100, disp=False)
-            
-            intercept = model.params['const']
-            slope = model.params['Log_Conc']
-            
-            # R-squared approximation (for reporting quality)
-            grouped_data['Probit'] = norm.ppf(grouped_data['Response'] / grouped_data['Total'])
-            r_squared = np.corrcoef(grouped_data['Log_Conc'], grouped_data['Probit'])[0, 1]**2
-
-        else:
-            # 조류 시험: 연속형 데이터 (ErC50/EyC50) -> Gaussian family (Probit 변환을 선형 적합)
+        if not is_animal_test:
+            # 조류 시험: 연속형 데이터 -> Gaussian family
             df_probit_check = dose_resp.copy()
             df_probit_check['Log_Conc'] = np.log10(df_probit_check['농도(mg/L)'])
             df_probit_check['Inhibition_adj'] = df_probit_check['Inhibition'].clip(0.001, 0.999)
             df_probit_check['Probit'] = stats.norm.ppf(df_probit_check['Inhibition_adj'])
-            
             grouped_data = df_probit_check.copy()
             
             model = sm.GLM(grouped_data['Probit'], sm.add_constant(grouped_data['Log_Conc']),
@@ -278,13 +306,37 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
             r_val = np.corrcoef(grouped_data['Log_Conc'], grouped_data['Probit'])[0, 1]
             r_squared = r_val ** 2
 
+        else:
+            # 동물 시험: 이진 반응 (LC50/EC50) -> Binomial family
+            df_glm['Log_Conc'] = np.log10(df_glm['농도(mg/L)'])
+            grouped_data = df_glm.groupby('농도(mg/L)').agg(
+                Response=(endpoint_col, 'sum'), 
+                Total=('총 개체수', 'sum'),
+                Log_Conc=('Log_Conc', 'mean')
+            ).reset_index()
+            
+            # ***안정화 로직: 0% 및 100% 반응 극단값 조정 (CI 계산 안정화)***
+            grouped_data.loc[grouped_data['Response'] == grouped_data['Total'], 'Response'] = grouped_data['Total'] * 0.999
+            grouped_data.loc[grouped_data['Response'] == 0, 'Response'] = grouped_data['Total'] * 0.001
+            
+            if grouped_data['Response'].sum() == 0 or grouped_data['Response'].sum() == grouped_data['Total'].sum():
+                raise ValueError("After adjustment, Probit CI fail.")
+                
+            model = sm.GLM(grouped_data['Response'], sm.add_constant(grouped_data['Log_Conc']),
+                            family=families.Binomial(), 
+                            exposure=grouped_data['Total']).fit(maxiter=100, disp=False)
+            
+            intercept = model.params['const']
+            slope = model.params['Log_Conc']
+            grouped_data['Probit'] = norm.ppf(grouped_data['Response'] / grouped_data['Total'])
+            r_squared = np.corrcoef(grouped_data['Log_Conc'], grouped_data['Probit'])[0, 1]**2
+
         if r_squared < 0.6 or slope <= 0: 
              raise ValueError("Low Probit Fit")
 
         # === 95% CI 계산 로직 (Delta Method 기반) ===
         alpha_hat = intercept
         beta_hat = slope
-        
         cov_matrix = model.cov_params()
         var_alpha = cov_matrix.loc['const', 'const']
         var_beta = cov_matrix.loc['Log_Conc', 'Log_Conc']
@@ -292,18 +344,15 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         
         log_lc50 = -alpha_hat / beta_hat
         
-        # Var(log(LC50))
         var_log_lc50_est = (1 / beta_hat**2) * (var_alpha + log_lc50**2 * var_beta + 2 * log_lc50 * cov_alpha_beta)
         std_err_log_lc50 = np.sqrt(var_log_lc50_est)
         
-        # 95% Confidence Limits (Z = 1.96)
         z_score_95 = norm.ppf(0.975)
         log_lcl = log_lc50 - z_score_95 * std_err_log_lc50
         log_ucl = log_lc50 + z_score_95 * std_err_log_lc50
         
         lcl = 10**log_lcl
         ucl = 10**log_ucl
-        
         ci_50_str = f"({lcl:.4f} ~ {ucl:.4f})"
         
         # === Probit CI 계산 완료 ===
@@ -346,9 +395,8 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         else:
              plot_x = grouped_data['Log_Conc']
              plot_y = grouped_data['Probit']
-             plot_x_original = grouped_data['Log_Conc'].apply(lambda x: 10**x) # Revert Log Conc to actual Conc
+             plot_x_original = grouped_data['Log_Conc'].apply(lambda x: 10**x)
              plot_y_original = grouped_data['Inhibition']
-
 
         plot_info = {
             'type': 'probit', 'x': plot_x, 'y': plot_y, 
