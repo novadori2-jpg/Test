@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import statsmodels.api as sm
 from statsmodels.genmod import families
 from scipy.stats import norm 
+from scipy.interpolate import interp1d # ICPIN/Bootstrap 필요
 
 # -----------------------------------------------------------------------------
 # [공통] 페이지 설정
@@ -14,9 +15,12 @@ st.set_page_config(page_title="생태독성 전문 분석기 (Final)", page_icon
 
 st.title("🧬 🧬 생태독성 전문 분석기 (Optimal Pro Ver.)")
 st.markdown("""
-이 앱은 제공된 순서도를 따르는 **최적화된 자동 통계 분석 알고리즘**을 구현합니다.
+이 앱은 제공된 순서도(
+
+[Image of a flow chart showing statistical methods for toxicity data analysis]
+)를 따르는 **최적화된 자동 통계 분석 알고리즘**을 구현합니다.
 1. **NOEC/LOEC:** Bonferroni t-test로 대체하여 결과를 도출합니다.
-2. **ECx/LCx:** 물벼룩/어류 시험 시 **Trimmed Spearman-Karber (TSK)를 1순위**로 적용하여 안정적인 LC50/EC50 값을 산출하고, 실패 시 Probit으로 전환됩니다.
+2. **ECx/LCx:** **GLM Probit**을 우선하며, 실패 시 **ICPIN + Bootstrap CI** 로직으로 전환되어 **안정적인 95% 신뢰구간**을 산출합니다.
 """)
 st.divider()
 
@@ -24,6 +28,95 @@ analysis_type = st.sidebar.radio(
     "분석할 실험을 선택하세요",
     ["🟢 조류 성장저해 (Algae)", "🦐 물벼룩 유영저해 (Daphnia)", "🐟 어류 급성독성 (Fish)"]
 )
+
+# -----------------------------------------------------------------------------
+# [ICPIN + Bootstrap] CI 산출 로직 (app.py에서 통합)
+# -----------------------------------------------------------------------------
+def get_icpin_values_with_ci(df_resp, endpoint, n_boot=500): # n_boot 500으로 증가
+    """Linear Interpolation (ICPIN) + Bootstrapping을 사용하여 ECp 값과 CI 산출"""
+    
+    # concentration column name standardization for the original logic
+    df_temp = df_resp.copy()
+    df_temp['Concentration'] = df_temp['농도(mg/L)']
+    df_temp['Value'] = df_temp[endpoint]
+    
+    raw_means = df_temp.groupby('Concentration')['Value'].mean()
+    x_raw = raw_means.index.values.astype(float)
+    y_raw = raw_means.values
+    
+    # Isotonic Regression (단조성 유지)
+    y_iso = np.maximum.accumulate(y_raw[::-1])[::-1]
+    
+    try:
+        interpolator = interp1d(y_iso, x_raw, kind='linear', bounds_error=False, fill_value=np.nan)
+    except:
+        interpolator = None
+
+    def calc_icpin_ec(interp_func, level, control_val):
+        if interp_func is None: return np.nan
+        # inhibition level is used for threshold here (0.5 for 50% effect)
+        target_y = control_val * (1 - level/100) 
+        if target_y > y_iso.max(): return np.nan
+        if target_y < y_iso.min(): return np.nan
+        
+        # ICp for inhibition yield (value should be lower than control)
+        return float(interp_func(target_y))
+
+    ec_levels = [5, 10, 25, 50, 60, 75, 80, 85, 90, 95]
+    main_results = {}
+    
+    # --- 1. Main Estimate Calculation ---
+    control_val = y_iso[0]
+    for level in ec_levels:
+        main_results[level] = calc_icpin_ec(interpolator, level, control_val)
+
+    # --- 2. Bootstrap for CI ---
+    boot_estimates = {l: [] for l in ec_levels}
+    groups = {c: df_temp[df_temp['Concentration']==c]['Value'].values for c in x_raw}
+    
+    for _ in range(n_boot):
+        boot_y_means = []
+        for c in x_raw:
+            if len(groups[c]) == 0: continue
+            resample = np.random.choice(groups[c], size=len(groups[c]), replace=True)
+            boot_y_means.append(resample.mean())
+        
+        if not boot_y_means: continue
+        
+        boot_y_means = np.array(boot_y_means)
+        y_boot_iso = np.maximum.accumulate(boot_y_means[::-1])[::-1]
+        
+        try:
+            boot_interp = interp1d(y_boot_iso, x_raw, kind='linear', bounds_error=False, fill_value=np.nan)
+            for level in ec_levels:
+                val = calc_icpin_ec(boot_interp, level, y_boot_iso[0])
+                if not np.isnan(val) and val > 0:
+                    boot_estimates[level].append(val)
+        except: continue
+
+    # --- 3. Final Formatting ---
+    final_out = {}
+    max_conc = x_raw.max()
+    for level in ec_levels:
+        val = main_results[level]
+        boots = boot_estimates[level]
+        
+        val_str = f"{val:.4f}" if not np.isnan(val) else (f"> {max_conc:.4f}" if level >= 50 else "n/a")
+
+        if np.isnan(val) and level < 50:
+             ci_str = "n/a"
+        elif np.isnan(val) and level >= 50:
+             ci_str = "N/A (>Max)"
+        elif len(boots) >= 20: # Only report CI if sufficient bootstrap samples were successful
+            lcl = np.percentile(boots, 2.5)
+            ucl = np.percentile(boots, 97.5)
+            ci_str = f"({lcl:.4f} ~ {ucl:.4f})"
+        else:
+            ci_str = "N/C (Bootstrap Fail)"
+        
+        final_out[f'EC{level}'] = {'val': val_str, 'lcl': ci_str, 'ucl': ci_str}
+        
+    return final_out
 
 # -----------------------------------------------------------------------------
 # [핵심 로직 1] 상세 통계 분석 및 가설 검정 (NOEC/LOEC) - (변경 없음)
@@ -201,41 +294,7 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
     st.divider()
 
 # -----------------------------------------------------------------------------
-# TSK 보조 함수 (재도입)
-# -----------------------------------------------------------------------------
-def calculate_tsk(df, endpoint_col):
-    """Trimmed Spearman-Karber (TSK) LC50 및 95% CI 계산."""
-    
-    df_mean = df.groupby('농도(mg/L)').agg(
-        {'총 개체수': 'mean', endpoint_col: 'mean'}
-    ).reset_index()
-    df_mean = df_mean[df_mean['농도(mg/L)'] > 0].sort_values('농도(mg/L)', ascending=False)
-    
-    df_mean['p'] = df_mean[endpoint_col] / df_mean['총 개체수']
-    
-    # TSK 계산 조건 확인 (50% 반응 구간이 있어야 함)
-    if len(df_mean) < 2 or df_mean['p'].max() < 0.5 or df_mean['p'].min() > 0.5:
-        return None, "N/A (Range Fail)"
-
-    df_mean['Log_C'] = np.log10(df_mean['농도(mg/L)'])
-    
-    # Karber Mean Formula (Simplified)
-    df_mean['p_shift'] = df_mean['p'].shift(-1).fillna(0)
-    df_mean['p_bar'] = (df_mean['p'] + df_mean['p_shift']) / 2
-    
-    df_mean['Log_C_shift'] = df_mean['Log_C'].shift(-1).fillna(0)
-    df_mean['Log_C_diff'] = df_mean['Log_C'] - df_mean['Log_C_shift']
-    
-    LC50_log = df_mean['Log_C'].iloc[0] - np.sum(df_mean['p_bar'] * df_mean['Log_C_diff'])
-    LC50_tsk = 10**LC50_log
-    
-    # TSK 신뢰구간 (CI): 수동 구현의 복잡성으로 인해 N/A로 보고
-    ci_str = "N/A (TSK)" 
-    
-    return LC50_tsk, ci_str
-
-# -----------------------------------------------------------------------------
-# [핵심 로직 2] ECp/LCp 산출 (TSK -> Probit CI 구현)
+# [핵심 로직 2] ECp/LCp 산출 (GLM Probit CI 구현 + ICPIN Fallback)
 # -----------------------------------------------------------------------------
 def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=False):
     dose_resp = df.groupby('농도(mg/L)')[endpoint_col].mean().reset_index()
@@ -259,56 +318,16 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
     plot_info = {}
     ci_50_str = "N/C"
 
-    # **0순위: TSK 분석 (물벼룩/어류 시험만 해당)**
-    if is_animal_test:
-        total_counts_per_conc = df.groupby('농도(mg/L)')['총 개체수'].count()
-        is_single_rep = len(total_counts_per_conc.unique()) == 1 and total_counts_per_conc.unique()[0] == 1
-        
-        if is_single_rep and dose_resp['Inhibition'].max() >= 0.5 and dose_resp['Inhibition'].min() <= 0.5:
-             LC50_tsk, ci_tsk = calculate_tsk(df, endpoint_col)
-             
-             if LC50_tsk is not None:
-                method_used = "Trimmed Spearman-Karber (TSK)"
-                for p in p_values:
-                    p_int = int(p * 100)
-                    if p_int == 50:
-                        ec_lc_results['p'].append(p_int)
-                        ec_lc_results['value'].append(f"{LC50_tsk:.4f}")
-                        ec_lc_results['status'].append("✅ TSK")
-                        ec_lc_results['95% CI'].append(ci_tsk)
-                    else:
-                        # TSK는 50%만 계산하므로, 다른 지점은 표시하지 않음
-                        ec_lc_results['p'].append(p_int)
-                        ec_lc_results['value'].append("-")
-                        ec_lc_results['status'].append("N/A (TSK)")
-                        ec_lc_results['95% CI'].append("N/A (TSK)")
-                
-                plot_info = {'type': 'linear', 'data': dose_resp, 'r_squared': 0, 'ec50_val': LC50_tsk}
-                return ec_lc_results, 0, method_used, plot_info
-
     # **1순위: GLM Probit 분석 (CI 계산 포함)**
     try:
         df_glm = df[df['농도(mg/L)'] > 0].copy()
         
-        if not is_animal_test:
-            # 조류 시험: 연속형 데이터 -> Gaussian family
-            df_probit_check = dose_resp.copy()
-            df_probit_check['Log_Conc'] = np.log10(df_probit_check['농도(mg/L)'])
-            df_probit_check['Inhibition_adj'] = df_probit_check['Inhibition'].clip(0.001, 0.999)
-            df_probit_check['Probit'] = stats.norm.ppf(df_probit_check['Inhibition_adj'])
-            grouped_data = df_probit_check.copy()
-            
-            model = sm.GLM(grouped_data['Probit'], sm.add_constant(grouped_data['Log_Conc']),
-                            family=families.Gaussian()).fit(maxiter=100, disp=False)
-                            
-            intercept = model.params['const']
-            slope = model.params['Log_Conc']
-            r_val = np.corrcoef(grouped_data['Log_Conc'], grouped_data['Probit'])[0, 1]
-            r_squared = r_val ** 2
-
-        else:
+        # GLM 모델링을 위한 데이터 준비
+        if is_animal_test:
             # 동물 시험: 이진 반응 (LC50/EC50) -> Binomial family
             df_glm['Log_Conc'] = np.log10(df_glm['농도(mg/L)'])
+            
+            # Grouped data for GLM
             grouped_data = df_glm.groupby('농도(mg/L)').agg(
                 Response=(endpoint_col, 'sum'), 
                 Total=('총 개체수', 'sum'),
@@ -330,6 +349,22 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
             slope = model.params['Log_Conc']
             grouped_data['Probit'] = norm.ppf(grouped_data['Response'] / grouped_data['Total'])
             r_squared = np.corrcoef(grouped_data['Log_Conc'], grouped_data['Probit'])[0, 1]**2
+
+        else:
+            # 조류 시험: 연속형 데이터 (ErC50/EyC50) -> Gaussian family
+            df_probit_check = dose_resp.copy()
+            df_probit_check['Log_Conc'] = np.log10(df_probit_check['농도(mg/L)'])
+            df_probit_check['Inhibition_adj'] = df_probit_check['Inhibition'].clip(0.001, 0.999)
+            df_probit_check['Probit'] = stats.norm.ppf(df_probit_check['Inhibition_adj'])
+            grouped_data = df_probit_check.copy()
+            
+            model = sm.GLM(grouped_data['Probit'], sm.add_constant(grouped_data['Log_Conc']),
+                            family=families.Gaussian()).fit(maxiter=100, disp=False)
+                            
+            intercept = model.params['const']
+            slope = model.params['Log_Conc']
+            r_val = np.corrcoef(grouped_data['Log_Conc'], grouped_data['Probit'])[0, 1]
+            r_squared = r_val ** 2
 
         if r_squared < 0.6 or slope <= 0: 
              raise ValueError("Low Probit Fit")
@@ -363,7 +398,6 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
             ecp_val = 10 ** log_ecp
             
             status_text = "✅ Probit"
-            ci_str = "N/A"
             
             if 0.05 <= p <= 0.95 and ecp_val < max_conc * 2 and ecp_val > 0:
                  value_text = f"{ecp_val:.4f}"
@@ -405,50 +439,45 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         }
 
 
-    # **2순위: Linear Interpolation (ICPIN 대체)**
+    # **2순위: Linear Interpolation (ICPIN Bootstrap CI 구현)**
     except Exception as e:
-        method_used = "Linear Interpolation (ICp)"
+        
+        # ICPIN 로직에 맞게 DataFrame 준비
+        df_icpin = df.copy()
+        df_icpin = df_icpin.rename(columns={'농도(mg/L)': 'Concentration', endpoint_col: 'Value'})
+        
+        # is_animal_test가 True인 경우: LC50/EC50 계산
+        if is_animal_test:
+            # ICPIN은 Response Rate (0 to 1)이 아닌 Raw Value를 사용하여 CI를 계산해야 함
+            # 여기서는 Response Rate (0 to 1)을 Inhibition (0 to 1)로 변환하여 사용
+            df_icpin['Value'] = df_icpin['Value'] / df_icpin['총 개체수']
+        else:
+            # 조류 시험의 경우: Inhibition Value를 직접 사용
+            # Note: 조류 시험은 Inhibition Rate을 사용하는 ICp가 적절하지만, 여기서는 LC/EC50 계산 로직을 따름
+             pass 
+
+        # ICp/Bootstrap CI 계산
+        icpin_results = get_icpin_values_with_ci(df_icpin, 'Value')
+        
+        method_used = "Linear Interpolation (ICPIN/Bootstrap)"
         r_squared = 0
-        dose_resp = dose_resp.sort_values('농도(mg/L)')
+        
+        # 결과 포맷팅
+        ci_50_str = icpin_results['EC50']['lcl']
+        ec50_val = icpin_results['EC50']['val']
+        
         
         ec_lc_results = {'p': [], 'value': [], 'status': [], '95% CI': []}
-        
         for p in p_values:
-            target_inhibition = p
-            ecp_val = None
+            level = int(p * 100)
+            res = icpin_results.get(f'EC{level}', {'val': 'n/a', 'lcl': 'n/a'})
             
-            lower = dose_resp[dose_resp['Inhibition'] <= target_inhibition]
-            upper = dose_resp[dose_resp['Inhibition'] >= target_inhibition]
-            
-            if not lower.empty and not upper.empty:
-                x1, y1 = lower.iloc[-1]['농도(mg/L)'], lower.iloc[-1]['Inhibition']
-                x2, y2 = upper.iloc[0]['농도(mg/L)'], upper.iloc[0]['Inhibition']
-                
-                if y1 == y2:
-                    ecp_val = x1
-                elif x1 == x2:
-                    ecp_val = x1
-                else:
-                    ecp_val = x1 + (target_inhibition - y1) * (x2 - x1) / (y2 - y1)
-            
-            
-            status_text = "✅ Interpol"
-            if ecp_val is None:
-                if p == 0.5:
-                     value_text = f">{max_conc:.4f}" 
-                     status_text = "⚠️ >Max"
-                else:
-                     value_text = "-"
-                     status_text = "⚠️ Range Fail"
-            else:
-                 value_text = f"{ecp_val:.4f}"
+            ec_lc_results['p'].append(level)
+            ec_lc_results['value'].append(res['val'])
+            ec_lc_results['status'].append("✅ Interpol")
+            ec_lc_results['95% CI'].append(res['lcl'])
 
-
-            ec_lc_results['p'].append(int(p * 100))
-            ec_lc_results['value'].append(value_text)
-            ec_lc_results['status'].append(status_text)
-            ec_lc_results['95% CI'].append("N/C") 
-                
+        # Plotting info (ICp 스타일 유지)
         plot_info = {'type': 'linear', 'data': dose_resp, 'r_squared': r_squared}
 
     return ec_lc_results, r_squared, method_used, plot_info
@@ -519,7 +548,7 @@ def plot_ec_lc_curve(plot_info, label, ec_lc_results):
         ec50_entry = [res for res in ec_lc_results['value'] if ec_lc_results['p'][ec_lc_results['value'].index(res)] == 50]
         ec50_val = ec50_entry[0] if ec50_entry and ec50_entry[0] != '-' and ec50_entry[0][0] != '>' else None
         
-        if ec50_val:
+        if ec50_val and ec50_val != 'n/a':
             ax.axvline(float(ec50_val), color='green', linestyle='--', linewidth=1, label=f'{label} ({ec50_val})')
         
         ax.set_title(f'{label} Dose-Response Curve (Linear Interpolation)')
