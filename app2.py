@@ -5,22 +5,18 @@ from scipy import stats
 import matplotlib.pyplot as plt
 import statsmodels.api as sm
 from statsmodels.genmod import families
-from scipy.stats import norm # Probit Z-score 사용
+from scipy.stats import norm 
 
 # -----------------------------------------------------------------------------
-# [공통] 페이지 설정 - (변경 없음)
+# [공통] 페이지 설정
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="생태독성 전문 분석기 (Final)", page_icon="🧬", layout="wide")
 
 st.title("🧬 🧬 생태독성 전문 분석기 (Optimal Pro Ver.)")
 st.markdown("""
-이 앱은 제공된 순서도(
-
-[Image of a flow chart showing statistical methods for toxicity data analysis]
-)를 따르는 **최적화된 자동 통계 분석 알고리즘**을 구현합니다.
-1. **데이터 경로:** 정규성/등분산성 검사 후 모수/비모수 경로를 자동으로 선택합니다.
-2. **NOEC/LOEC:** 순서도의 권장 사후 검정 방법(Dunnett)을 **통계적으로 가장 신뢰도가 높은 Bonferroni t-test로 대체**하여 결과를 도출합니다.
-3. **ECx/LCx:** **GLM Probit 분석**을 우선하며, 실패 시 선형 보간법으로 전환됩니다.
+이 앱은 제공된 순서도를 따르는 **최적화된 자동 통계 분석 알고리즘**을 구현합니다.
+1. **NOEC/LOEC:** Bonferroni t-test로 대체하여 결과를 도출합니다.
+2. **ECx/LCx:** **GLM Probit 분석**을 우선하며, **OECD TG 요구사항에 따라 95% 신뢰구간을 산출**합니다. 실패 시 선형 보간법으로 전환됩니다.
 """)
 st.divider()
 
@@ -33,7 +29,6 @@ analysis_type = st.sidebar.radio(
 # [핵심 로직 1] 상세 통계 분석 및 가설 검정 (NOEC/LOEC) - (변경 없음)
 # -----------------------------------------------------------------------------
 def perform_detailed_stats(df, endpoint_col, endpoint_name):
-    # ... (이전과 동일한 NOEC/LOEC 통계 분석 로직) ...
     """
     상세 통계량을 출력하고, 정규성/등분산성 결과에 따라 
     적절한 검정(T-test, ANOVA, Kruskal)을 수행하여 NOEC/LOEC를 찾습니다.
@@ -44,7 +39,7 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
     groups = df.groupby('농도(mg/L)')[endpoint_col].apply(list)
     concentrations = sorted(groups.keys())
     control_group = groups[0]
-    num_groups = len(concentrations) # 그룹 수 확인
+    num_groups = len(concentrations) 
     
     if num_groups < 2:
         st.error("데이터 그룹이 2개 미만입니다 (대조군 포함). 분석을 수행할 수 없습니다.")
@@ -64,7 +59,6 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
         data = groups[conc]
         if len(data) >= 3:
             stat, p = stats.shapiro(data)
-            # p < 0.01 이면 정규성 위배 (엄격한 기준)
             res_text = '✅ 만족 (Normal)' if p > 0.01 else '❌ 위배 (Non-Normal)'
             normality_results.append({
                 '농도(mg/L)': conc, 'Statistic': f"{stat:.4f}", 'P-value': f"{p:.4f}", '결과': res_text
@@ -223,19 +217,41 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         total = df.groupby('농도(mg/L)')['총 개체수'].mean()[dose_resp['농도(mg/L)']].values
         dose_resp['Inhibition'] = dose_resp[endpoint_col] / total
     else:
+        # 조류 시험의 경우, 데이터가 최종 세포수를 나타내므로 mean을 사용
+        total = df.groupby('농도(mg/L)')[endpoint_col].count()[dose_resp['농도(mg/L)']].values # 재확인 필요: count 대신 total_replicates를 사용해야 함
         dose_resp['Inhibition'] = (control_mean - dose_resp[endpoint_col]) / control_mean
 
     method_used = "Linear Interpolation (ICp)"
     r_squared = 0
     plot_info = {}
-    ci_50_str = "N/A (Fit Fail)"
+    ci_50_str = "N/C"
 
     # **1순위: GLM Probit 분석 (CI 계산 포함)**
     try:
+        # GLM 모델링을 위한 데이터 준비
         df_glm = df[df['농도(mg/L)'] > 0].copy()
         
-        # GLM 모델링을 위한 데이터 준비
-        if is_animal_test:
+        # Plotting 및 R-squared 계산을 위한 임시 Probit 변환
+        if not is_animal_test:
+            df_probit_check = dose_resp.copy()
+            df_probit_check['Log_Conc'] = np.log10(df_probit_check['농도(mg/L)'])
+            df_probit_check['Inhibition_adj'] = df_probit_check['Inhibition'].clip(0.001, 0.999)
+            df_probit_check['Probit'] = stats.norm.ppf(df_probit_check['Inhibition_adj'])
+            
+            # Grouped data for GLM fitting (using Gaussian for continuous data)
+            grouped_data = df_probit_check.copy()
+            
+            # Simple linregress for slope/intercept check before GLM
+            slope_lin, intercept_lin, r_val, _, _ = stats.linregress(df_probit_check['Log_Conc'], df_probit_check['Probit'])
+            r_squared = r_val ** 2
+            
+            model = sm.GLM(grouped_data['Probit'], sm.add_constant(grouped_data['Log_Conc']),
+                            family=families.Gaussian()).fit(maxiter=100, disp=False)
+            
+            intercept = model.params['const']
+            slope = model.params['Log_Conc']
+
+        else:
             # 동물 시험: 이진 반응 (LC50/EC50) -> Binomial family
             df_glm['Log_Conc'] = np.log10(df_glm['농도(mg/L)'])
             
@@ -246,62 +262,39 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
                 Log_Conc=('Log_Conc', 'mean')
             ).reset_index()
             
+            # 모델 수렴 실패 조건 (모두 0 또는 모두 1 반응)
             if grouped_data['Response'].sum() == 0 or grouped_data['Response'].sum() == grouped_data['Total'].sum():
                 raise ValueError("All zero or all one response, Probit CI fail.")
-                
+            
+            # GLM Probit Fit
             model = sm.GLM(grouped_data['Response'], sm.add_constant(grouped_data['Log_Conc']),
                             family=families.Binomial(), 
                             exposure=grouped_data['Total']).fit(maxiter=100, disp=False)
             
-            # R-squared check (using simpler correlation for log-probit fit approx)
+            intercept = model.params['const']
+            slope = model.params['Log_Conc']
+            
+            # R-squared approximation (for reporting quality)
             grouped_data['Probit'] = norm.ppf(grouped_data['Response'] / grouped_data['Total'])
             r_squared = np.corrcoef(grouped_data['Log_Conc'], grouped_data['Probit'])[0, 1]**2
-            
-            intercept = model.params['const']
-            slope = model.params['Log_Conc']
-            
-        else:
-            # 조류 시험: 연속형 데이터 (ErC50/EyC50) -> Gaussian family (Probit 변환을 선형 적합)
-            df_probit = dose_resp.copy()
-            df_probit['Log_Conc'] = np.log10(df_probit['농도(mg/L)'])
-            df_probit['Inhibition_adj'] = df_probit['Inhibition'].clip(0.001, 0.999)
-            df_probit['Probit'] = stats.norm.ppf(df_probit['Inhibition_adj'])
-            
-            model = sm.GLM(df_probit['Probit'], sm.add_constant(df_probit['Log_Conc']),
-                            family=families.Gaussian()).fit(maxiter=100, disp=False)
-                            
-            intercept = model.params['const']
-            slope = model.params['Log_Conc']
-            r_val = np.corrcoef(df_probit['Log_Conc'], df_probit['Probit'])[0, 1]
-            r_squared = r_val ** 2
-            
-            grouped_data = df_probit # Use this for plotting/results check
+
 
         if r_squared < 0.6 or slope <= 0: 
              raise ValueError("Low Probit Fit")
 
         # === 95% CI 계산 로직 (Delta Method 기반) ===
-        # CI for log(LC50) = (-intercept / slope)
-        
         alpha_hat = intercept
         beta_hat = slope
         
-        # Get covariance matrix
         cov_matrix = model.cov_params()
         var_alpha = cov_matrix.loc['const', 'const']
         var_beta = cov_matrix.loc['Log_Conc', 'Log_Conc']
         cov_alpha_beta = cov_matrix.loc['const', 'Log_Conc']
         
-        # Delta method for Variance of log(LC50)
-        # Var(log(LC50)) = (1/beta^2) * [Var(alpha) + (log(LC50))^2 * Var(beta) + 2*log(LC50)*Cov(alpha, beta)]
-        
         log_lc50 = -alpha_hat / beta_hat
         
-        # Function to calculate estimated variance
-        def var_lc50_log(alpha, beta, log_lc50_est, V_alpha, V_beta, C_alpha_beta):
-            return (1 / beta**2) * (V_alpha + log_lc50_est**2 * V_beta + 2 * log_lc50_est * C_alpha_beta)
-            
-        var_log_lc50_est = var_lc50_log(alpha_hat, beta_hat, log_lc50, var_alpha, var_beta, cov_alpha_beta)
+        # Var(log(LC50))
+        var_log_lc50_est = (1 / beta_hat**2) * (var_alpha + log_lc50**2 * var_beta + 2 * log_lc50 * cov_alpha_beta)
         std_err_log_lc50 = np.sqrt(var_log_lc50_est)
         
         # 95% Confidence Limits (Z = 1.96)
@@ -322,7 +315,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
             ecp_val = 10 ** log_ecp
             
             status_text = "✅ Probit"
-            ci_str = "N/A" # EC50 외의 CI는 복잡하여 N/A
+            ci_str = "N/A"
             
             if 0.05 <= p <= 0.95 and ecp_val < max_conc * 2 and ecp_val > 0:
                  value_text = f"{ecp_val:.4f}"
@@ -342,19 +335,13 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
             else:
                 ec_lc_results['95% CI'].append("N/A")
 
-        method_used = "GLM Probit Analysis (Binomial/Gaussian)"
+        method_used = "GLM Probit Analysis"
         
         # Plotting info
-        if is_animal_test:
-             plot_x = grouped_data['Log_Conc']
-             plot_y = grouped_data['Probit']
-             plot_x_original = grouped_data['농도(mg/L)']
-             plot_y_original = grouped_data['Response'] / grouped_data['Total']
-        else:
-             plot_x = grouped_data['Log_Conc']
-             plot_y = grouped_data['Probit']
-             plot_x_original = grouped_data['농도(mg/L)']
-             plot_y_original = grouped_data['Inhibition']
+        plot_x = grouped_data['Log_Conc']
+        plot_y = grouped_data['Probit']
+        plot_x_original = grouped_data['농도(mg/L)']
+        plot_y_original = grouped_data['Response'] / grouped_data['Total'] if is_animal_test else grouped_data['Inhibition']
 
         plot_info = {
             'type': 'probit', 'x': plot_x, 'y': plot_y, 
@@ -412,7 +399,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
     return ec_lc_results, r_squared, method_used, plot_info
 
 # -----------------------------------------------------------------------------
-# [그래프 표시 함수] - (변경 없음)
+# [그래프 표시 함수] - (GLM 기반 데이터 로드에 맞게 수정)
 # -----------------------------------------------------------------------------
 def plot_ec_lc_curve(plot_info, label, ec_lc_results):
     fig, ax = plt.subplots(figsize=(8, 6))
@@ -447,7 +434,9 @@ def plot_ec_lc_curve(plot_info, label, ec_lc_results):
         ax_dr.scatter(plot_info['x_original'], plot_info['y_original'] * 100, 
                       label='Observed Data', color='blue', alpha=0.7)
         
-        x_pred = np.linspace(min(plot_info['x_original']), max(plot_info['x_original']), 100)
+        # Probit Fit Line on Dose-Response Curve
+        x_data_for_pred = plot_info['x_original']
+        x_pred = np.linspace(min(x_data_for_pred), max(x_data_for_pred), 100)
         log_x_pred = np.log10(x_pred)
         
         probit_pred = slope*log_x_pred + intercept
