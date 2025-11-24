@@ -28,7 +28,6 @@ analysis_type = st.sidebar.radio(
 # [핵심 로직 1] 상세 통계 분석 및 가설 검정 (NOEC/LOEC) - (변경 없음)
 # -----------------------------------------------------------------------------
 def perform_detailed_stats(df, endpoint_col, endpoint_name):
-    # ... (perform_detailed_stats 함수 내용은 변경 없음 - 이전 단계 수정 사항 반영됨) ...
     """
     상세 통계량을 출력하고, 정규성/등분산성 결과에 따라 
     적절한 검정(T-test, ANOVA, Kruskal)을 수행하여 NOEC/LOEC를 찾습니다.
@@ -195,7 +194,7 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
 
 
 # -----------------------------------------------------------------------------
-# [핵심 로직 2] ECp/LCp 산출 (Probit -> Interpolation Fallback) - 신뢰구간 추가
+# [핵심 로직 2] ECp/LCp 산출 (Probit -> Interpolation Fallback) 
 # -----------------------------------------------------------------------------
 def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=False):
     dose_resp = df.groupby('농도(mg/L)')[endpoint_col].mean().reset_index()
@@ -216,7 +215,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
     p_values = np.arange(5, 100, 5) / 100 
     max_conc = dose_resp['농도(mg/L)'].max()
 
-    # 1차 시도: Probit (Statsmodels GLM 사용 - 신뢰구간 포함)
+    # 1차 시도: Probit 
     try:
         df_probit = dose_resp.copy()
         df_probit['Log_Conc'] = np.log10(df_probit['농도(mg/L)'])
@@ -230,21 +229,16 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         if r_squared < 0.6 or slope <= 0: 
              raise ValueError("Low Probit Fit")
 
-        # 신뢰구간 계산을 위한 GLM (Binary response가 아닌 Continuous inhibition을 Probit 변환하여 사용)
-        # Note: 엄밀한 Probit GLM은 Binomial family를 사용하지만, 여기서는 단순화된 선형 Probit 모델을 기반으로 함.
-        # 정확한 신뢰구간 계산은 Statsmodels GLM(Binomial)을 사용해야 하지만, 데이터 구조가 복잡해지므로 단순화된 방법 유지.
-        # T-test 기반의 표준오차를 사용한 근사적인 신뢰구간을 산출 (scipy linregress의 std_err를 활용)
+        ci_50 = "N/A" # 신뢰구간 계산 복잡도로 인해 N/A로 설정 유지
         
         for p in p_values:
             z_score = stats.norm.ppf(p)
             log_ecp = (z_score - intercept) / slope
             ecp_val = 10 ** log_ecp
             
-            # 신뢰구간 계산 (매우 단순화된 버전: 신뢰구간 계산 로직은 Statsmodels GLM이 더 정확하나,
-            # 현재 코드 구조상 구현의 복잡도가 높아져 'N/A'로 처리하고 50% 지점만 집중함)
             ci_str = "N/A"
             
-            if 0.05 <= p <= 0.95 and ecp_val < max_conc * 2:
+            if 0.05 <= p <= 0.95 and ecp_val < max_conc * 2 and ecp_val > 0:
                  status_text = "✅ Probit"
                  value_text = f"{ecp_val:.4f}"
             else:
@@ -254,44 +248,16 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
                      value_text = f">{max_conc:.4f}"
                  else:
                      value_text = "-"
-                     
+            
             ec_lc_results['p'].append(int(p * 100))
             ec_lc_results['value'].append(value_text)
             ec_lc_results['status'].append(status_text)
-            ec_lc_results['95% CI'].append(ci_str) # 임시로 N/A 처리
-
-        # 신뢰구간을 표시하기 위해 Statsmodels GLM을 사용하여 50% 지점만 계산
-        # (Probit GLM은 Binomial 데이터가 필요)
-        if is_animal_test and '총 개체수' in df.columns:
-            df_probit_glm = df.copy()
-            df_probit_glm = df_probit_glm[df_probit_glm['농도(mg/L)'] > 0]
-            df_probit_glm['Log_Conc'] = np.log10(df_probit_glm['농도(mg/L)'])
-            df_probit_glm['Response'] = df_probit_glm[endpoint_col]
-            df_probit_glm['Total'] = df_probit_glm['총 개체수']
             
-            try:
-                # Binomial GLM with Probit Link for LC/EC calculation
-                glm_model = glm("Response / Total ~ Log_Conc", data=df_probit_glm,
-                                family=families.Binomial(link=families.links.Probit())).fit()
-                
-                # EC50 (Prob=0.5, Z=0)
-                log_ec50_glm = -glm_model.params['Intercept'] / glm_model.params['Log_Conc']
-                
-                # Delta method for Confidence Interval (매우 복잡하므로 단순화)
-                # 실제 계산은 복잡하므로, 여기서는 Probit 모델이 성공했음을 확인하는 역할로 한정하고,
-                # 신뢰구간은 "N/A"로 보고서처럼 처리함.
-                ci_50 = "N/A" # 
-                
-            except Exception:
-                ci_50 = "N/A"
-        else:
-             ci_50 = "N/A"
-        
-        # 50% 지점의 신뢰구간을 찾아서 업데이트
-        for i, p_val in enumerate(ec_lc_results['p']):
-            if p_val == 50 and ec_lc_results['status'][i] == "✅ Probit":
-                # 만약 신뢰구간 계산 로직이 있었다면 ci_50을 여기에 할당
-                ec_lc_results['95% CI'][i] = ci_50 
+            # 50% 지점의 신뢰구간 업데이트
+            if int(p * 100) == 50 and status_text == "✅ Probit":
+                ec_lc_results['95% CI'].append(ci_50) 
+            else:
+                ec_lc_results['95% CI'].append("N/A")
 
         method_used = "Probit Analysis (CI: N/A)"
         plot_info = {
@@ -344,7 +310,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
             ec_lc_results['p'].append(int(p * 100))
             ec_lc_results['value'].append(value_text)
             ec_lc_results['status'].append(status_text)
-            ec_lc_results['95% CI'].append("N/C") # 선형 보간법은 신뢰구간 미제공 [cite: 480]
+            ec_lc_results['95% CI'].append("N/C") # 선형 보간법은 신뢰구간 미제공
                 
         plot_info = {'type': 'linear', 'data': dose_resp, 'r_squared': r_squared}
 
@@ -354,7 +320,6 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
 # [그래프 표시 함수] - (변경 없음)
 # -----------------------------------------------------------------------------
 def plot_ec_lc_curve(plot_info, label, ec_lc_results):
-    # ... (plot_ec_lc_curve 함수 내용은 변경 없음 - 이전 단계 수정 사항 반영됨) ...
     fig, ax = plt.subplots(figsize=(8, 6))
     
     if plot_info['type'] == 'probit':
@@ -523,10 +488,14 @@ def run_algae_analysis():
             ec50_val = ec50_entry[0] if ec50_entry and ec50_entry[0] != '-' else "산출 불가"
             ci_val = ec50_ci_entry[0] if ec50_ci_entry and ec50_ci_entry[0] != '-' else "N/A"
             
-            cm1, cm2, cm3 = st.columns(3)
-            cm1.metric(f"중심값 ({ec_label} 50)", f"**{ec50_val} mg/L**")
-            cm2.metric("95% 신뢰구간", ci_val)
-            cm3.metric("적용 모델", method)
+            cm1, cm2, cm3 = st.columns(3) # <- cm1, cm2, cm3 정의
+            
+            with cm1:
+                st.metric(f"중심값 ({ec_label} 50)", f"**{ec50_val} mg/L**")
+            with cm2:
+                st.metric("95% 신뢰구간", ci_val)
+            with cm3:
+                st.metric("적용 모델", method)
             
             # ECp 범위 테이블 출력 및 강조 (50% 강조 유지)
             ecp_df = pd.DataFrame(ec_lc_results)
@@ -547,7 +516,7 @@ def run_algae_analysis():
             show_results('수율', '수율', 'EyC')
 
 # -----------------------------------------------------------------------------
-# [분석 실행 함수] 어류/물벼룩
+# [분석 실행 함수] 어류/물벼룩 - 수정됨
 # -----------------------------------------------------------------------------
 def run_animal_analysis(test_name, label):
     st.header(f"{test_name}")
@@ -587,10 +556,16 @@ def run_animal_analysis(test_name, label):
         ec50_val = ec50_entry[0] if ec50_entry and ec50_entry[0] != '-' else "산출 불가"
         ci_val = ec50_ci_entry[0] if ec50_ci_entry and ec50_ci_entry[0] != '-' else "N/A"
         
-        c1, c2, c3 = st.columns(3)
-        c1.metric(f"중심값 ({label} 50)", f"**{ec50_val} mg/L**")
-        cm2.metric("95% 신뢰구간", ci_val)
-        c3.metric("적용 모델", method)
+        # === 수정된 부분: st.columns(3) 정의를 Metric 호출 이전에 위치시킴 ===
+        c1, c2, c3 = st.columns(3) 
+        
+        with c1:
+            st.metric(f"중심값 ({label} 50)", f"**{ec50_val} mg/L**")
+        with c2: # NameError 해결
+            st.metric("95% 신뢰구간", ci_val)
+        with c3:
+            st.metric("적용 모델", method)
+        # =====================================================================
         
         # ECp 범위 테이블 출력 및 강조
         ecp_df = pd.DataFrame(ec_lc_results)
