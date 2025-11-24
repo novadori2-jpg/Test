@@ -122,7 +122,6 @@ def get_icpin_values_with_ci(df_resp, endpoint, n_boot=1000):
 # [핵심 로직 1] 상세 통계 분석 및 가설 검정 (NOEC/LOEC) - (변경 없음)
 # -----------------------------------------------------------------------------
 def perform_detailed_stats(df, endpoint_col, endpoint_name):
-    # ... (perform_detailed_stats function - Bonferroni logic maintained) ...
     """
     상세 통계량을 출력하고, 정규성/등분산성 결과에 따라 
     적절한 검정(T-test, ANOVA, Kruskal)을 수행하여 NOEC/LOEC를 찾습니다.
@@ -453,7 +452,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         # ICPIN 로직에 맞게 DataFrame 준비
         df_icpin = df.copy()
         
-        # ***KeyError 방지 및 컬럼명 일치***
+        # ***KeyError 방지 및 컬럼명 일치: ICPIN 로직이 요구하는 컬럼명으로 변경***
         df_icpin = df_icpin.rename(columns={'농도(mg/L)': 'Concentration'})
         df_icpin['Value'] = df_icpin[endpoint_col]
         
@@ -482,8 +481,11 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
             ec_lc_results['95% CI'].append(res['lcl'])
 
         # Plotting info (ICp 스타일 유지)
+        # ***오류 수정: dose_resp를 사용하여 x_original과 y_original을 구성***
+        dose_resp_groups = dose_resp.groupby('농도(mg/L)').first().reset_index()
+        
         plot_info = {'type': 'linear', 'data': dose_resp, 'r_squared': r_squared, 
-                     'x_original': dose_resp['농도(mg/L)'].values, 
+                     'x_original': dose_resp_groups['농도(mg/L)'].values, 
                      'y_original': inhibition_rates}
 
     return ec_lc_results, r_squared, method_used, plot_info
@@ -568,7 +570,7 @@ def plot_ec_lc_curve(plot_info, label, ec_lc_results):
 
 
 # -----------------------------------------------------------------------------
-# [분석 실행 함수] 조류 (Algae)
+# [분석 실행 함수] 조류 (Algae) - (변경 없음)
 # -----------------------------------------------------------------------------
 def run_algae_analysis():
     st.header("🟢 조류 성장저해 시험 (OECD TG 201)")
