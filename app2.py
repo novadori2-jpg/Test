@@ -16,7 +16,7 @@ st.title("🧬 🧬 생태독성 전문 분석기 (Detailed Pro Ver.)")
 st.markdown("""
 이 앱은 **CETIS/ToxCalc 수준의 알고리즘**을 적용하되, **모든 통계적 검정 과정을 투명하게 공개**합니다.
 1. **통계 검정:** 기초통계 -> 정규성 -> 등분산성 -> (그룹 수에 따라 T-test/ANOVA/Kruskal 자동 선택) → NOEC/LOEC 도출
-2. **독성값:** **Trimmed Spearman-Karber (TSK)** 우선 적용 (반복구 없을 시) → Probit → 선형보간법.
+2. **독성값:** **Probit** 우선 적용, 적합도 미달 시 **Linear Interpolation (ICp)** 자동 전환.
 """)
 st.divider()
 
@@ -75,7 +75,6 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
     st.markdown("#### 3. 등분산성 검정 (Levene's Test)")
     data_list = [groups[c] for c in concentrations]
     
-    # 데이터가 2개 미만일 경우 Levene 검정 불가능
     if len(data_list) < 2:
         l_stat, l_p = np.nan, np.nan
         is_homogeneous = False
@@ -101,7 +100,6 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
         
         st.warning("👉 농도 그룹이 2개이므로 **'한계시험(Limit Test) T-검정'**을 수행합니다.")
         
-        # T-test 수행 (등분산성 결과 equal_var 사용)
         t_stat, t_p = stats.ttest_ind(control_group, test_group, equal_var=is_homogeneous)
         
         st.write(f"- T-statistic: {t_stat:.4f}")
@@ -199,47 +197,12 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
     st.divider()
 
 # -----------------------------------------------------------------------------
-# [TSK 보조 함수] Trimmed Spearman-Karber (TSK) LC50 계산
+# TSK 보조 함수 (제거: 조류/일반 동물 시험에 TSK 부적합)
 # -----------------------------------------------------------------------------
-def calculate_tsk(df, endpoint_col):
-    """Trimmed Spearman-Karber (TSK) LC50 및 95% CI 계산. (신뢰구간은 N/A로 보고)"""
-    
-    df_mean = df.groupby('농도(mg/L)').agg(
-        {'총 개체수': 'mean', endpoint_col: 'mean'}
-    ).reset_index()
-    df_mean = df_mean[df_mean['농도(mg/L)'] > 0].sort_values('농도(mg/L)', ascending=False)
-    
-    # 반응률 (p)
-    df_mean['p'] = df_mean[endpoint_col] / df_mean['총 개체수']
-    
-    # TSK 계산 조건 확인 (50% 반응 구간이 있어야 함)
-    if len(df_mean) < 2 or df_mean['p'].max() < 0.5 or df_mean['p'].min() > 0.5:
-        return None, "N/A (Range Fail)"
-
-    # Karber 공식: log(LC50) = log(C_k) - sum[ (p_i - p_{i-1}) * (log C_i + log C_{i-1}) / 2 ]
-    
-    df_mean['Log_C'] = np.log10(df_mean['농도(mg/L)'])
-    
-    # p_bar: 누적 평균 반응률
-    df_mean['p_shift'] = df_mean['p'].shift(-1).fillna(0)
-    df_mean['p_bar'] = (df_mean['p'] + df_mean['p_shift']) / 2
-    
-    # Log C의 차이
-    df_mean['Log_C_shift'] = df_mean['Log_C'].shift(-1).fillna(0)
-    df_mean['Log_C_diff'] = df_mean['Log_C'] - df_mean['Log_C_shift']
-    
-    # TSK Mean Formula (Simplified Karber Mean)
-    LC50_log = df_mean['Log_C'].iloc[0] - np.sum(df_mean['p_bar'] * df_mean['Log_C_diff'])
-    
-    LC50_tsk = 10**LC50_log
-    
-    # 신뢰구간 (TSK 공식 수동 구현의 복잡성으로 인해 N/A로 보고)
-    ci_str = "N/A (TSK)" 
-    
-    return LC50_tsk, ci_str
+# TSK 로직은 현재 CETIS/ICPIN 방법론 재현에 방해가 되므로 제거하고 Probit-ICp 순서로 환원합니다.
 
 # -----------------------------------------------------------------------------
-# [핵심 로직 2] ECp/LCp 산출 (TSK -> Probit -> Interpolation Fallback)
+# [핵심 로직 2] ECp/LCp 산출 (Probit -> Interpolation Fallback) - TSK 제거
 # -----------------------------------------------------------------------------
 def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=False):
     dose_resp = df.groupby('농도(mg/L)')[endpoint_col].mean().reset_index()
@@ -250,13 +213,6 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
     p_values = np.arange(5, 100, 5) / 100 
     ec_lc_results = {'p': [], 'value': [], 'status': [], '95% CI': []}
     
-    if is_animal_test:
-        total_counts_per_conc = df.groupby('농도(mg/L)')['총 개체수'].count()
-        # TSK 조건: 어류/물벼룩, 각 농도당 반복구가 1개이며, 총 개체수가 10 이상일 때 TSK 시도
-        is_tsk_candidate = len(total_counts_per_conc.unique()) == 1 and total_counts_per_conc.unique()[0] == 1 and df['총 개체수'].min() >= 10
-    else:
-        is_tsk_candidate = False
-    
     # --- 반응률 계산 ---
     if is_animal_test:
         total = df.groupby('농도(mg/L)')['총 개체수'].mean()[dose_resp['농도(mg/L)']].values
@@ -264,49 +220,11 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
     else:
         dose_resp['Inhibition'] = (control_mean - dose_resp[endpoint_col]) / control_mean
 
-    # **1순위: TSK 분석 (어류/물벼룩, 단일 반복)**
-    if is_tsk_candidate and dose_resp['Inhibition'].max() >= 0.5 and dose_resp['Inhibition'].min() <= 0.5:
-        LC50_tsk, ci_tsk = calculate_tsk(df, endpoint_col)
-        
-        if LC50_tsk is not None and 0 < LC50_tsk < max_conc * 2:
-            method_used = "Trimmed Spearman-Karber (TSK)"
-            
-            for p in p_values:
-                p_int = int(p * 100)
-                if p_int == 50:
-                    ec_lc_results['p'].append(p_int)
-                    ec_lc_results['value'].append(f"{LC50_tsk:.4f}")
-                    ec_lc_results['status'].append("✅ TSK")
-                    ec_lc_results['95% CI'].append(ci_tsk)
-                else:
-                    # TSK는 50% 지점만 계산하므로 다른 지점은 ICp로 추정
-                    target_inhibition = p
-                    ecp_val = None
-                    lower = dose_resp[dose_resp['Inhibition'] <= target_inhibition]
-                    upper = dose_resp[dose_resp['Inhibition'] >= target_inhibition]
-                    
-                    if not lower.empty and not upper.empty:
-                        x1, y1 = lower.iloc[-1]['농도(mg/L)'], lower.iloc[-1]['Inhibition']
-                        x2, y2 = upper.iloc[0]['농도(mg/L)'], upper.iloc[0]['Inhibition']
-                        if y1 != y2:
-                            ecp_val = x1 + (target_inhibition - y1) * (x2 - x1) / (y2 - y1)
+    method_used = "Linear Interpolation (ICp)"
+    r_squared = 0
+    plot_info = {}
 
-                    ec_lc_results['p'].append(p_int)
-                    if ecp_val is not None:
-                        ec_lc_results['value'].append(f"{ecp_val:.4f}")
-                        ec_lc_results['status'].append("✅ Interp (TSK)")
-                    else:
-                        ec_lc_results['value'].append("-")
-                        ec_lc_results['status'].append("⚠️ Range Fail")
-
-                    ec_lc_results['95% CI'].append("N/C (TSK)")
-            
-            # Plotting info
-            plot_info = {'type': 'linear', 'data': dose_resp, 'r_squared': 0, 'ec50_val': LC50_tsk}
-            return ec_lc_results, 0, method_used, plot_info
-    
-
-    # **2순위: Probit 분석**
+    # **1순위: Probit 분석**
     try:
         df_probit = dose_resp.copy()
         df_probit['Log_Conc'] = np.log10(df_probit['농도(mg/L)'])
@@ -355,7 +273,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         }
 
 
-    # **3순위: Linear Interpolation (ICp)**
+    # **2순위: Linear Interpolation (ICp)**
     except Exception as e:
         method_used = "Linear Interpolation (ICp)"
         r_squared = 0
@@ -404,29 +322,12 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
     return ec_lc_results, r_squared, method_used, plot_info
 
 # -----------------------------------------------------------------------------
-# [그래프 표시 함수] - (변경 없음)
+# [그래프 표시 함수] - TSK 관련 로직 제거 및 ICp로 환원
 # -----------------------------------------------------------------------------
 def plot_ec_lc_curve(plot_info, label, ec_lc_results):
     fig, ax = plt.subplots(figsize=(8, 6))
     
-    # TSK 결과일 경우 (Plotting info에 ec50_val이 있을 경우)
-    if plot_info['type'] == 'linear' and 'ec50_val' in plot_info:
-        d = plot_info['data']
-        ec50_val = plot_info['ec50_val']
-        method_used = "TSK" if 'TSK' in ec_lc_results['95% CI'][0] else "Linear Interp"
-        
-        ax.plot(d['농도(mg/L)'], d['Inhibition'] * 100, marker='o', linestyle='-', color='blue', label='Data Points')
-        ax.axhline(50, color='red', linestyle='--', label='50% Cutoff')
-        ax.axvline(ec50_val, color='green', linestyle='--', linewidth=1, label=f'{label} ({ec50_val:.4f})')
-        
-        ax.set_title(f'{label} Dose-Response Curve ({method_used})')
-        ax.set_xlabel('Concentration (mg/L)')
-        ax.set_ylabel('Inhibition / Response (%)')
-        ax.legend()
-        ax.grid(True, alpha=0.5)
-        st.pyplot(fig)
-        return
-
+    # TSK 관련 로직 제거
     
     if plot_info['type'] == 'probit':
         # Probit 변환 그래프
@@ -504,13 +405,17 @@ def run_algae_analysis():
     
     with st.expander("⚙️ 실험 조건 설정", expanded=True):
         c1, c2 = st.columns(2)
-        init_cells = c1.number_input("초기 세포수 (cells/mL)", value=10000, help="OECD TG 201: 초기 10,000 cells/mL")
+        init_cells = c1.number_input("초기 세포수 (cells/mL)", value=5000, help="OECD TG 201: 초기 10,000 cells/mL") # 5000으로 기본값 변경
         duration = c2.number_input("배양 시간 (h)", value=72, help="OECD TG 201: 72시간")
 
     if 'algae_data_final' not in st.session_state:
+        # 보고서 G320168의 평균 측정농도 및 평균 최종 세포수 (Cell density)를 기반으로 설정
+        # 0.990 mg/L -> 560,000 cells/mL (저해율 -17.5%)
+        # 8.66 mg/L -> 420,000 cells/mL (저해율 10.6%)
+        # 24.8 mg/L -> 331,000 cells/mL (저해율 29.5%)
         st.session_state.algae_data_final = pd.DataFrame({
-            '농도(mg/L)': [0.0, 0.0, 0.0, 0.0, 11.0, 11.0, 11.0, 11.0], 
-            '최종 세포수 (cells/mL)': [1150000, 1130000, 1160000, 1150000, 1050000, 1030000, 1060000, 1040000]
+            '농도(mg/L)': [0.0, 0.0, 0.0, 0.99, 0.99, 0.99, 8.66, 8.66, 8.66, 24.8, 24.8, 24.8, 74.7, 74.7, 74.7],
+            '최종 세포수 (cells/mL)': [458000, 489000, 462000, 583000, 524000, 549000, 377000, 458000, 424000, 354000, 320000, 319000, 95000, 110000, 100000]
         })
     
     df_input = st.data_editor(
