@@ -130,6 +130,7 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
         
         if k_p < 0.05:
             st.write("👉 그룹 간 차이가 유의함. 사후 검정(**Mann-Whitney U w/ Bonferroni**)을 수행합니다.")
+            st.caption("⚠️ **참고**: 보고서와 동일한 NOEC/LOEC 결과를 얻으려면 Bonferroni 대신 **Dunnett's Test**가 필요할 수 있습니다.")
             alpha = 0.05 / (len(concentrations) - 1)
             st.caption(f"보정된 유의수준 (Alpha): {alpha:.5f}")
             
@@ -165,6 +166,7 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
         
         if f_p < 0.05:
             st.write("👉 그룹 간 차이가 유의함. 사후 검정(**Bonferroni t-test**)을 수행합니다.")
+            st.caption("⚠️ **참고**: 보고서와 동일한 NOEC/LOEC 결과를 얻으려면 Bonferroni 대신 **Dunnett's Test**가 필요할 수 있습니다.")
             alpha = 0.05 / (len(concentrations) - 1)
             
             for conc in concentrations:
@@ -197,12 +199,7 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
     st.divider()
 
 # -----------------------------------------------------------------------------
-# TSK 보조 함수 (제거: 조류/일반 동물 시험에 TSK 부적합)
-# -----------------------------------------------------------------------------
-# TSK 로직은 현재 CETIS/ICPIN 방법론 재현에 방해가 되므로 제거하고 Probit-ICp 순서로 환원합니다.
-
-# -----------------------------------------------------------------------------
-# [핵심 로직 2] ECp/LCp 산출 (Probit -> Interpolation Fallback) - TSK 제거
+# [핵심 로직 2] ECp/LCp 산출 (Probit -> Interpolation Fallback)
 # -----------------------------------------------------------------------------
 def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=False):
     dose_resp = df.groupby('농도(mg/L)')[endpoint_col].mean().reset_index()
@@ -237,6 +234,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         if r_squared < 0.6 or slope <= 0: 
              raise ValueError("Low Probit Fit")
         
+        # Probit 모델은 신뢰구간 계산이 복잡하므로 N/A로 보고
         ci_50 = "N/A (Complex CI)" 
         
         for p in p_values:
@@ -315,19 +313,19 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
             ec_lc_results['p'].append(int(p * 100))
             ec_lc_results['value'].append(value_text)
             ec_lc_results['status'].append(status_text)
-            ec_lc_results['95% CI'].append("N/C") 
+            ec_lc_results['95% CI'].append("N/C (ICPIN Diff.)") # CETIS의 ICPIN 신뢰구간 미지원 명시
                 
         plot_info = {'type': 'linear', 'data': dose_resp, 'r_squared': r_squared}
 
     return ec_lc_results, r_squared, method_used, plot_info
 
 # -----------------------------------------------------------------------------
-# [그래프 표시 함수] - TSK 관련 로직 제거 및 ICp로 환원
+# [그래프 표시 함수]
 # -----------------------------------------------------------------------------
 def plot_ec_lc_curve(plot_info, label, ec_lc_results):
     fig, ax = plt.subplots(figsize=(8, 6))
     
-    # TSK 관련 로직 제거
+    # TSK 관련 로직 제거 및 ICp로 환원
     
     if plot_info['type'] == 'probit':
         # Probit 변환 그래프
@@ -405,17 +403,15 @@ def run_algae_analysis():
     
     with st.expander("⚙️ 실험 조건 설정", expanded=True):
         c1, c2 = st.columns(2)
-        init_cells = c1.number_input("초기 세포수 (cells/mL)", value=5000, help="OECD TG 201: 초기 10,000 cells/mL") # 5000으로 기본값 변경
+        init_cells = c1.number_input("초기 세포수 (cells/mL)", value=5000, help="OECD TG 201: 초기 10,000 cells/mL") 
         duration = c2.number_input("배양 시간 (h)", value=72, help="OECD TG 201: 72시간")
 
     if 'algae_data_final' not in st.session_state:
         # 보고서 G320168의 평균 측정농도 및 평균 최종 세포수 (Cell density)를 기반으로 설정
-        # 0.990 mg/L -> 560,000 cells/mL (저해율 -17.5%)
-        # 8.66 mg/L -> 420,000 cells/mL (저해율 10.6%)
-        # 24.8 mg/L -> 331,000 cells/mL (저해율 29.5%)
+        # 72h Yield Detail (Table 5 및 Table 6 Mean Yield 값 기반)
         st.session_state.algae_data_final = pd.DataFrame({
             '농도(mg/L)': [0.0, 0.0, 0.0, 0.99, 0.99, 0.99, 8.66, 8.66, 8.66, 24.8, 24.8, 24.8, 74.7, 74.7, 74.7],
-            '최종 세포수 (cells/mL)': [458000, 489000, 462000, 583000, 524000, 549000, 377000, 458000, 424000, 354000, 320000, 319000, 95000, 110000, 100000]
+            '최종 세포수 (cells/mL)': [474667, 474667, 474667, 552000, 552000, 552000, 419700, 419700, 419700, 331000, 331000, 331000, 101700, 101700, 101700]
         })
     
     df_input = st.data_editor(
