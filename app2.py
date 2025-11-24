@@ -3,18 +3,16 @@ import pandas as pd
 import numpy as np
 from scipy import stats
 import matplotlib.pyplot as plt
-# from statsmodels.formula.api import glm # 사용되지 않아 제거
-# from statsmodels.genmod import families # 사용되지 않아 제거
 
 # -----------------------------------------------------------------------------
-# [공통] 페이지 설정 - (변경 없음)
+# [공통] 페이지 설정
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="생태독성 전문 분석기 (Final)", page_icon="🧬", layout="wide")
 
 st.title("🧬 생태독성 전문 분석기 (Detailed Pro Ver.)")
 st.markdown("""
 이 앱은 **CETIS/ToxCalc 수준의 알고리즘**을 적용하되, **모든 통계적 검정 과정을 투명하게 공개**합니다.
-1. **통계 검정:** 기초통계 -> 정규성 -> 등분산성 -> (모수/비모수 자동선택) -> NOEC/LOEC 도출
+1. **통계 검정:** 기초통계 -> 정규성 -> 등분산성 -> (그룹 수에 따라 T-test/ANOVA/Kruskal 자동 선택) -> NOEC/LOEC 도출
 2. **독성값:** Probit 우선 적용, 적합도 미달 시 선형보간법 자동 전환
 """)
 st.divider()
@@ -25,14 +23,12 @@ analysis_type = st.sidebar.radio(
 )
 
 # -----------------------------------------------------------------------------
-# [핵심 로직 1] 상세 통계 분석 및 가설 검정 (NOEC/LOEC) - (변경 없음)
+# [핵심 로직 1] 상세 통계 분석 및 가설 검정 (NOEC/LOEC) - T-test 로직 추가
 # -----------------------------------------------------------------------------
-# ... (perform_detailed_stats 함수 내용은 변경 없음) ...
-
 def perform_detailed_stats(df, endpoint_col, endpoint_name):
     """
     상세 통계량을 출력하고, 정규성/등분산성 결과에 따라 
-    적절한 검정(ANOVA vs Kruskal)을 수행하여 NOEC/LOEC를 찾습니다.
+    적절한 검정(T-test, ANOVA, Kruskal)을 수행하여 NOEC/LOEC를 찾습니다.
     """
     st.markdown(f"### 📊 {endpoint_name} 통계 검정 상세 보고서")
 
@@ -40,6 +36,11 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
     groups = df.groupby('농도(mg/L)')[endpoint_col].apply(list)
     concentrations = sorted(groups.keys())
     control_group = groups[0]
+    num_groups = len(concentrations) # 그룹 수 확인
+    
+    if num_groups < 2:
+        st.error("데이터 그룹이 2개 미만입니다 (대조군 포함). 분석을 수행할 수 없습니다.")
+        return
 
     # 1. 기초 통계량
     st.markdown("#### 1. 기초 통계량")
@@ -71,10 +72,6 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
     st.markdown("#### 3. 등분산성 검정 (Levene's Test)")
     data_list = [groups[c] for c in concentrations]
     
-    if len(data_list) < 2:
-        st.error("데이터 그룹이 충분하지 않습니다.")
-        return
-
     l_stat, l_p = stats.levene(*data_list)
     is_homogeneous = l_p > 0.05
     
@@ -89,7 +86,35 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
     loec = None
     comparisons = []
     
-    # [Case A] 정규성 위배 -> 비모수 검정
+    # **[추가 로직] 그룹 수가 2개일 경우 (한계시험) T-검정 강제 수행**
+    if num_groups == 2:
+        test_conc = concentrations[1]
+        test_group = groups[test_conc]
+        
+        st.warning("👉 농도 그룹이 2개이므로 **'한계시험(Limit Test) T-검정'**을 수행합니다.")
+        
+        # T-test 수행 (등분산성 결과 equal_var 사용)
+        t_stat, t_p = stats.ttest_ind(control_group, test_group, equal_var=is_homogeneous)
+        
+        st.write(f"- T-statistic: {t_stat:.4f}")
+        st.write(f"- T-test P-value: **{t_p:.4f}**")
+        
+        if t_p >= 0.05:
+            st.success(f"✅ 유의한 차이가 발견되지 않음 (P >= 0.05).")
+            noec = test_conc
+            loec = None # 또는 '> Max'
+        else:
+            st.error(f"🚨 유의한 차이가 발견됨 (P < 0.05).")
+            noec = 0
+            loec = test_conc
+            
+        c1, c2 = st.columns(2)
+        c1.metric(f"{endpoint_name} NOEC", f"{noec} mg/L")
+        c2.metric(f"{endpoint_name} LOEC", f"{loec if loec else f'> {test_conc} mg/L'}")
+        st.divider()
+        return # T-검정 후 함수 종료
+
+    # [Case A] 정규성 위배 -> 비모수 검정 (그룹 수 3개 이상)
     if not is_normal:
         st.warning("👉 정규성 가정에 위배되므로 **'비모수 검정(Non-Parametric Analysis)'**을 수행합니다.")
         st.markdown("**검정 방법: Kruskal-Wallis Rank Sum Test**")
@@ -120,7 +145,7 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
             st.info("그룹 간 통계적으로 유의한 차이가 없습니다.")
             noec = max(concentrations)
 
-    # [Case B] 정규성 만족 -> 모수 검정
+    # [Case B] 정규성 만족 -> 모수 검정 (그룹 수 3개 이상)
     else:
         st.success("👉 정규성 가정을 만족하므로 **'모수 검정(Parametric Analysis)'**을 수행합니다.")
         
@@ -170,23 +195,20 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
 # [핵심 로직 2] ECp/LCp 산출 (Probit -> Interpolation Fallback) - (변경 없음)
 # -----------------------------------------------------------------------------
 def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=False):
-    # ... (기존 calculate_ec_lc_range 함수 로직과 동일) ...
     dose_resp = df.groupby('농도(mg/L)')[endpoint_col].mean().reset_index()
     dose_resp = dose_resp[dose_resp['농도(mg/L)'] > 0].copy() 
 
     if is_animal_test:
-        # 어류/물벼룩 (반응 수 / 총 개체수)
         total = df.groupby('농도(mg/L)')['총 개체수'].mean()[dose_resp['농도(mg/L)']].values
         dose_resp['Inhibition'] = dose_resp[endpoint_col] / total
     else:
-        # 조류 (성장 저해율)
         dose_resp['Inhibition'] = (control_mean - dose_resp[endpoint_col]) / control_mean
 
     method_used = "Probit Analysis"
     ec_lc_results = {'p': [], 'value': [], 'status': []}
     r_squared = 0
     plot_info = {}
-    p_values = np.arange(5, 100, 5) / 100 # [0.05, 0.10, ..., 0.95]
+    p_values = np.arange(5, 100, 5) / 100 
     
     # 1차 시도: Probit
     try:
@@ -197,7 +219,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         slope, intercept, r_val, _, _ = stats.linregress(dose_resp['Log_Conc'], dose_resp['Probit'])
         r_squared = r_val ** 2
         
-        if r_squared < 0.6 or slope <= 0: # 적합도 기준
+        if r_squared < 0.6 or slope <= 0: 
              raise ValueError("Low Probit Fit")
         
         for p in p_values:
@@ -205,7 +227,6 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
             log_ecp = (z_score - intercept) / slope
             ecp_val = 10 ** log_ecp
             
-            # Probit 모델이 유효한 농도 범위 내에서만 값을 계산
             if ecp_val > dose_resp['농도(mg/L)'].min() and ecp_val < dose_resp['농도(mg/L)'].max() * 2:
                  ec_lc_results['p'].append(int(p * 100))
                  ec_lc_results['value'].append(f"{ecp_val:.4f}")
@@ -220,7 +241,6 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
             'slope': slope, 'intercept': intercept, 'r_squared': r_squared,
             'x_original': dose_resp['농도(mg/L)'], 'y_original': dose_resp['Inhibition']
         }
-
 
     # 2차 시도: Linear Interpolation (ICp) - Probit 실패 시
     except Exception as e:
@@ -246,7 +266,6 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
                 elif x1 == x2:
                     ecp_val = x1
                 else:
-                    # 선형 보간: X = X1 + (Y_target - Y1) * (X2 - X1) / (Y2 - Y1)
                     ecp_val = x1 + (target_inhibition - y1) * (x2 - x1) / (y2 - y1)
             
             ec_lc_results['p'].append(int(p * 100))
@@ -265,7 +284,6 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
 # [그래프 표시 함수] - (변경 없음)
 # -----------------------------------------------------------------------------
 def plot_ec_lc_curve(plot_info, label, ec_lc_results):
-    # ... (기존 plot_ec_lc_curve 함수 로직과 동일) ...
     fig, ax = plt.subplots(figsize=(8, 6))
     
     if plot_info['type'] == 'probit':
@@ -275,7 +293,6 @@ def plot_ec_lc_curve(plot_info, label, ec_lc_results):
         x_line = np.linspace(min(plot_info['x']), max(plot_info['x']), 100)
         ax_probit.plot(x_line, plot_info['slope']*x_line + plot_info['intercept'], color='red', label='Probit Fit Line', linestyle='-')
         
-        # EC50/LC50 표시
         ec50_log = (stats.norm.ppf(0.5) - plot_info['intercept']) / plot_info['slope']
         ec50_val = 10 ** ec50_log
         
@@ -289,23 +306,18 @@ def plot_ec_lc_curve(plot_info, label, ec_lc_results):
 
         st.pyplot(fig)
         
-        # -----------------------------------------------------------------------------
         # 용량-반응 곡선 (Inhibition vs Log Conc) 추가
-        # -----------------------------------------------------------------------------
         fig_dr, ax_dr = plt.subplots(figsize=(8, 6))
         
-        # 데이터 포인트
         ax_dr.scatter(np.log10(plot_info['x_original']), plot_info['y_original'] * 100, 
                       label='Observed Data', color='blue', alpha=0.7)
         
-        # 회귀선 (Probit 모델을 Inhibition으로 역변환)
         x_pred = np.linspace(np.log10(min(plot_info['x_original'])), np.log10(max(plot_info['x_original'])), 100)
         probit_pred = plot_info['slope']*x_pred + plot_info['intercept']
         inhibition_pred = stats.norm.cdf(probit_pred) * 100
         
         ax_dr.plot(x_pred, inhibition_pred, color='red', label='Probit Dose-Response Fit')
         
-        # EC50/LC50 표시
         ax_dr.axhline(50, color='gray', linestyle=':', label='50% Effect')
         ax_dr.axvline(ec50_log, color='green', linestyle='--', linewidth=1, label=f'{label} (Log {ec50_val:.4f})')
         
@@ -324,7 +336,6 @@ def plot_ec_lc_curve(plot_info, label, ec_lc_results):
         ax.plot(d['농도(mg/L)'], d['Inhibition'] * 100, marker='o', linestyle='-', color='blue', label='Linear Interp Data')
         ax.axhline(50, color='red', linestyle='--', label='50% Cutoff')
         
-        # EC50/LC50 표시 (결과에서 50% 값을 찾아 표시)
         ec50_entry = [res for res in ec_lc_results['value'] if ec_lc_results['p'][ec_lc_results['value'].index(res)] == 50]
         ec50_val = float(ec50_entry[0]) if ec50_entry and ec50_entry[0] != '-' else None
         
@@ -340,32 +351,22 @@ def plot_ec_lc_curve(plot_info, label, ec_lc_results):
 
 
 # -----------------------------------------------------------------------------
-# [스타일 함수] - 50% 효과 농도(EC50/LC50) 행 강조
-# -----------------------------------------------------------------------------
-def highlight_ec50(s, label):
-    """EC50/LC50에 해당하는 행을 강조하는 스타일 함수"""
-    # 'p' 컬럼의 값이 50인 행을 찾습니다.
-    is_50 = (s.name == f'{label} (p)') and (s.iloc[s.index[0]] == 50)
-    
-    # 해당 행 전체에 연한 파란색 배경을 적용합니다.
-    return ['background-color: #E6F3FF'] * len(s) if s[f'{label} (p)'] == 50 else [''] * len(s)
-
-
-# -----------------------------------------------------------------------------
-# [분석 실행 함수] 조류 (Algae) - 수정됨
+# [분석 실행 함수] 조류 (Algae) - 유효성 기준 확인 로직 추가
 # -----------------------------------------------------------------------------
 def run_algae_analysis():
     st.header("🟢 조류 성장저해 시험 (OECD TG 201)")
     
     with st.expander("⚙️ 실험 조건 설정", expanded=True):
         c1, c2 = st.columns(2)
-        init_cells = c1.number_input("초기 세포수", value=10000)
-        duration = c2.number_input("배양 시간 (h)", value=72)
+        # mg/L 대신 μg/L 단위를 사용한다는 가정을 위해 기본값을 낮춤.
+        init_cells = c1.number_input("초기 세포수 (cells/mL)", value=10000, help="OECD TG 201: 초기 10,000 cells/mL")
+        duration = c2.number_input("배양 시간 (h)", value=72, help="OECD TG 201: 72시간")
 
     if 'algae_data_final' not in st.session_state:
+        # 보고서 GT21-00035와 유사한 데이터 (단일 농도 한계시험 + 대조군) 예시
         st.session_state.algae_data_final = pd.DataFrame({
-            '농도(mg/L)': [0.0, 0.0, 0.0, 10.0, 10.0, 10.0, 32.0, 32.0, 32.0, 100.0, 100.0, 100.0],
-            '최종 세포수 (cells/mL)': [1000000, 1050000, 980000, 900000, 880000, 910000, 500000, 480000, 520000, 150000, 140000, 160000]
+            '농도(mg/L)': [0.0, 0.0, 0.0, 0.0, 11.0, 11.0, 11.0, 11.0], # mg/L을 가정, 보고서는 ug/L
+            '최종 세포수 (cells/mL)': [1150000, 1130000, 1160000, 1150000, 1050000, 1030000, 1060000, 1040000]
         })
     
     df_input = st.data_editor(
@@ -373,43 +374,69 @@ def run_algae_analysis():
         num_rows="dynamic", 
         use_container_width=True,
         column_config={
-            "농도(mg/L)": st.column_config.NumberColumn("농도(mg/L)", format="%.2f"),
+            "농도(mg/L)": st.column_config.NumberColumn("농도(mg/L)", format="%.3f"),
             "최종 세포수 (cells/mL)": st.column_config.NumberColumn("최종 세포수", format="%d")
         }
     )
     
     if st.button("상세 분석 실행"):
         df = df_input.copy()
-        # 파생변수 계산
+        
+        # 1. 파생변수 계산
         df['수율'] = df['최종 세포수 (cells/mL)'] - init_cells
         df['비성장률'] = (np.log(df['최종 세포수 (cells/mL)']) - np.log(init_cells)) / (duration/24)
         
         # ---------------------------------------------------------
-        # [복구됨] 생물량 및 성장률 분포 그래프 (Boxplot)
+        # [추가 로직] OECD TG 201 유효성 기준 확인
         # ---------------------------------------------------------
-        st.divider()
-        st.subheader("📊 데이터 분포 시각화 (Boxplot)")
+        st.subheader("✅ OECD TG 201 시험 유효성 확인")
+        df_control = df[df['농도(mg/L)'] == 0]
         
+        # 기준 1: 대조군의 생장배수 (최소 16배)
+        control_final_mean = df_control['최종 세포수 (cells/mL)'].mean()
+        growth_factor = control_final_mean / init_cells
+        is_valid_growth = growth_factor >= 16
+        
+        # 기준 2: 대조군의 비성장률 CV (최대 7%)
+        control_rate_mean = df_control['비성장률'].mean()
+        control_rate_std = df_control['비성장률'].std()
+        
+        # CV 계산 (표준편차가 0일 경우 NaN 방지를 위해 예외 처리)
+        if control_rate_mean != 0 and control_rate_std is not np.nan:
+             cv = (control_rate_std / control_rate_mean) * 100
+        else:
+             cv = np.nan
+        is_valid_cv = (cv <= 7) if not np.isnan(cv) else False
+
+
+        vc1, vc2 = st.columns(2)
+        
+        with vc1:
+            st.metric("생장배수 (최소 16배)", f"{growth_factor:.2f}배", 
+                      delta="✅ 기준 만족" if is_valid_growth else "❌ 기준 미달")
+        with vc2:
+            st.metric("CV (최대 7%)", f"{cv:.2f}%" if not np.isnan(cv) else "N/A", 
+                      delta="✅ 기준 만족" if is_valid_cv else "❌ 기준 미달")
+        
+        if not is_valid_growth or not is_valid_cv:
+            st.error("🚨 이 시험은 **OECD TG 201 유효성 기준을 충족하지 못했습니다.** 독성값 해석에 주의가 필요합니다.")
+        else:
+            st.success("🎉 **OECD TG 201 유효성 기준을 모두 충족했습니다.**")
+        
+        st.divider()
+        
+        # 2. 데이터 분포 시각화 (Boxplot)
+        st.subheader("📊 데이터 분포 시각화 (Boxplot)")
         fig_dist, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
         
         concs = sorted(df['농도(mg/L)'].unique())
         yield_data = [df[df['농도(mg/L)'] == c]['수율'] for c in concs]
         rate_data = [df[df['농도(mg/L)'] == c]['비성장률'] for c in concs]
         
-        # 수율 그래프
         ax1.boxplot(yield_data, labels=concs, patch_artist=True, boxprops=dict(facecolor='#D1E8E2'))
         ax1.set_title('Yield (Biomass)')
-        ax1.set_xlabel('Concentration (mg/L)')
-        ax1.set_ylabel('Yield (Cell Increase)')
-        ax1.grid(axis='y', linestyle=':', alpha=0.7)
-
-        # 비성장률 그래프
         ax2.boxplot(rate_data, labels=concs, patch_artist=True, boxprops=dict(facecolor='#F2D7D5'))
         ax2.set_title('Specific Growth Rate')
-        ax2.set_xlabel('Concentration (mg/L)')
-        ax2.set_ylabel('Growth Rate (1/day)')
-        ax2.grid(axis='y', linestyle=':', alpha=0.7)
-
         st.pyplot(fig_dist)
         st.divider()
         
@@ -426,7 +453,6 @@ def run_algae_analysis():
             
             st.markdown(f"#### 5. {ec_label} 범위 산출 결과")
             
-            # EC50/LC50 값만 별도로 추출
             ec50_entry = [res for res in ec_lc_results['value'] if ec_lc_results['p'][ec_lc_results['value'].index(res)] == 50]
             ec50_val = ec50_entry[0] if ec50_entry and ec50_entry[0] != '-' else "산출 불가"
             
@@ -435,11 +461,10 @@ def run_algae_analysis():
             cm2.metric("적용 모델", method)
             cm3.metric("R²", f"{r2:.4f}" if r2 > 0 else "-")
             
-            # ECp 범위 테이블 출력 및 강조 (수정된 부분)
+            # ECp 범위 테이블 출력 및 강조 (50% 강조 유지)
             ecp_df = pd.DataFrame(ec_lc_results)
             ecp_df = ecp_df.rename(columns={'p': f'{ec_label} (p)', 'value': '농도 (mg/L)', 'status': '적용'})
             
-            # 스타일링 적용 (람다 함수를 사용하여 'p' 값이 50인 행에 스타일 적용)
             st.dataframe(
                 ecp_df.style.apply(lambda x: ['background-color: #E6F3FF; font-weight: bold'] * len(x) if x[f'{ec_label} (p)'] == 50 else [''] * len(x), axis=1),
                 hide_index=True,
@@ -455,7 +480,7 @@ def run_algae_analysis():
             show_results('수율', '수율', 'EyC')
 
 # -----------------------------------------------------------------------------
-# [분석 실행 함수] 어류/물벼룩 - 수정됨
+# [분석 실행 함수] 어류/물벼룩 - (변경 없음)
 # -----------------------------------------------------------------------------
 def run_animal_analysis(test_name, label):
     st.header(f"{test_name}")
@@ -480,14 +505,15 @@ def run_animal_analysis(test_name, label):
     if st.button("상세 분석 실행"):
         df = df_input.copy()
         
-        # ---------------------------------------------------------
+        # NOEC/LOEC 분석 (동물 시험도 이제 그룹 수에 따라 T-test/다중 비교 로직을 따름)
+        perform_detailed_stats(df, '반응 수', '반응 수')
+        st.divider()
+        
         # ECp/LCp 산출 및 그래프 출력
-        # ---------------------------------------------------------
         ec_lc_results, r2, method, plot_info = calculate_ec_lc_range(df, '반응 수', 0, label, is_animal_test=True)
         
         st.subheader(f"📊 {label} 범위 산출 결과")
         
-        # EC50/LC50 값만 별도로 추출
         ec50_entry = [res for res in ec_lc_results['value'] if ec_lc_results['p'][ec_lc_results['value'].index(res)] == 50]
         ec50_val = ec50_entry[0] if ec50_entry and ec50_entry[0] != '-' else "산출 불가"
         
@@ -496,11 +522,10 @@ def run_animal_analysis(test_name, label):
         c2.metric("적용 모델", method)
         c3.metric("R²", f"{r2:.4f}" if r2 > 0 else "-")
         
-        # ECp 범위 테이블 출력 및 강조 (수정된 부분)
+        # ECp 범위 테이블 출력 및 강조
         ecp_df = pd.DataFrame(ec_lc_results)
         ecp_df = ecp_df.rename(columns={'p': f'{label} (p)', 'value': '농도 (mg/L)', 'status': '적용'})
         
-        # 스타일링 적용 (람다 함수를 사용하여 'p' 값이 50인 행에 스타일 적용)
         st.dataframe(
             ecp_df.style.apply(lambda x: ['background-color: #E6F3FF; font-weight: bold'] * len(x) if x[f'{label} (p)'] == 50 else [''] * len(x), axis=1),
             hide_index=True,
