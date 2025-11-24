@@ -3,10 +3,10 @@ import pandas as pd
 import numpy as np
 from scipy import stats
 import matplotlib.pyplot as plt
-from scipy.interpolate import interp1d 
 import statsmodels.api as sm
 from statsmodels.genmod import families
 from scipy.stats import norm 
+from scipy.interpolate import interp1d 
 
 # -----------------------------------------------------------------------------
 # [공통] 페이지 설정
@@ -16,9 +16,9 @@ st.set_page_config(page_title="생태독성 전문 분석기 (Final)", page_icon
 st.title("🧬 생태독성 전문 분석기 (Optimal Pro Ver.)")
 st.markdown("""
 이 앱은 **OECD TG 201, 202, 203** 보고서 요구사항을 충족합니다.
-1. **조류 (Algae):** 시간별 생장 곡선 및 농도-반응 곡선, ErC50/EyC50 산출.
-2. **물벼룩/어류:** **24h/48h(96h) 시간대별 탭 분리**, TSK/Probit/ICPIN 자동 선택을 통한 LC50/EC50 산출.
-3. **통계:** Bonferroni t-test (NOEC) 및 Bootstrap CI (ECx).
+1. **조류 (Algae):** 생장 곡선 및 72h ErC50/EyC50.
+2. **물벼룩 (Daphnia):** 24h, 48h EC50.
+3. **어류 (Fish):** 24h, 48h, 72h, 96h LC50 및 **96h 기울기(Slope)**, **농도-치사 곡선**.
 """)
 st.divider()
 
@@ -28,11 +28,9 @@ analysis_type = st.sidebar.radio(
 )
 
 # -----------------------------------------------------------------------------
-# [함수 1] ICPIN + Bootstrap CI 산출 로직
+# [ICPIN + Bootstrap] CI 산출 로직
 # -----------------------------------------------------------------------------
 def get_icpin_values_with_ci(df_resp, endpoint, n_boot=1000):
-    """Linear Interpolation (ICPIN) + Bootstrapping을 사용하여 ECp 값과 CI 산출"""
-    
     df_temp = df_resp.copy()
     
     if 'Concentration' not in df_temp.columns:
@@ -140,8 +138,8 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
     st.dataframe(summary.style.format("{:.4f}"))
 
     st.markdown("#### 2. 정규성 검정 (Shapiro-Wilk)")
-    normality_results = []
     is_normal = True
+    normality_results = []
     for conc in concentrations:
         data = groups[conc]
         if len(data) >= 3:
@@ -245,7 +243,6 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
                            family=families.Binomial(), exposure=grouped['Total']).fit(disp=False)
             
             intercept, slope = model.params['const'], model.params['Log_Conc']
-            # R2 approx
             pred = model.predict()
             actual = grouped['Response']/grouped['Total']
             r_squared = np.corrcoef(actual, pred)[0,1]**2 if len(actual)>1 else 0
@@ -260,7 +257,6 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
                            family=families.Gaussian()).fit(disp=False)
             intercept, slope = model.params['const'], model.params['Log_Conc']
             r_squared = np.corrcoef(df_p['Log_Conc'], df_p['Probit'])[0,1]**2
-            grouped = df_p
 
         if r_squared < 0.6 or slope <= 0: raise ValueError("Low Fit")
 
@@ -281,21 +277,17 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         method_used = "GLM Probit Analysis"
         
         if is_animal_test:
-             plot_x = grouped['Log_Conc']
-             plot_y = grouped['Response']/grouped['Total'] # Actual Data for Plot
-             plot_x_orig = grouped['농도(mg/L)']
-             plot_y_orig = grouped['Response']/grouped['Total']
+            plot_info = {'type': 'probit', 'x': grouped['Log_Conc'], 'y': stats.norm.ppf(grouped['Response']/grouped['Total']),
+                         'slope': slope, 'intercept': intercept, 'r_squared': r_squared,
+                         'x_original': grouped['농도(mg/L)'], 'y_original': grouped['Response']/grouped['Total']}
         else:
-             plot_x = grouped['Log_Conc']
-             plot_y = grouped['Inhibition']
-             plot_x_orig = grouped['농도(mg/L)']
-             plot_y_orig = grouped['Inhibition']
-
-        plot_info = {'type': 'probit', 'x': plot_x, 'y': plot_y, 'slope': slope, 'intercept': intercept, 
-                     'r_squared': r_squared, 'x_original': plot_x_orig, 'y_original': plot_y_orig}
+            plot_info = {'type': 'probit', 'x': df_p['Log_Conc'], 'y': df_p['Probit'],
+                         'slope': slope, 'intercept': intercept, 'r_squared': r_squared,
+                         'x_original': df_p['농도(mg/L)'], 'y_original': df_p['Inhibition']}
 
     # 2순위: Linear Interpolation (ICPIN)
     except Exception as e:
+        st.warning(f"Probit 모델 실패 ({e}). ICPIN + Bootstrap으로 전환합니다.")
         
         df_icpin = df.copy()
         conc_col = [c for c in df_icpin.columns if '농도' in c][0]
@@ -309,6 +301,8 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         icpin_res, ctrl_val, inh_rates = get_icpin_values_with_ci(df_icpin, 'Value')
         
         method_used = "Linear Interpolation (ICPIN/Bootstrap)"
+        ci_50_str = icpin_res['EC50']['lcl']
+        ec50_val = icpin_res['EC50']['val']
         
         ec_lc_results = {'p': [], 'value': [], 'status': [], '95% CI': []}
         for p in p_values:
@@ -320,7 +314,6 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
             ec_lc_results['95% CI'].append(r['lcl'])
             
         unique_concs = sorted(df_icpin['Concentration'].unique())
-        
         plot_info = {'type': 'linear', 'data': dose_resp, 'r_squared': 0, 
                      'x_original': unique_concs, 
                      'y_original': inh_rates}
@@ -330,7 +323,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
 # -----------------------------------------------------------------------------
 # [함수 4] 그래프 출력 (Dose-Response)
 # -----------------------------------------------------------------------------
-def plot_ec_lc_curve(plot_info, label, ec_lc_results):
+def plot_ec_lc_curve(plot_info, label, ec_lc_results, y_label="Response (%)"):
     fig, ax = plt.subplots(figsize=(8, 6))
     
     if plot_info['type'] == 'probit':
@@ -343,7 +336,7 @@ def plot_ec_lc_curve(plot_info, label, ec_lc_results):
         y_pred = stats.norm.cdf(plot_info['slope']*np.log10(x_pred)+plot_info['intercept']) * 100
         
         ax.plot(x_pred, y_pred, 'r-', label='Probit Fit')
-        ax.set_xscale('log') # Log scale for X-axis
+        ax.set_xscale('log') 
         
     else:
         x = plot_info['x_original']
@@ -357,13 +350,13 @@ def plot_ec_lc_curve(plot_info, label, ec_lc_results):
     if ec50_val:
         try:
             val = float(ec50_val)
-            ax.axvline(val, color='green', linestyle='--', label=f'EC50: {val}')
+            ax.axvline(val, color='green', linestyle='--', label=f'LC50/EC50: {val}')
         except: pass
 
     ax.axhline(50, color='gray', linestyle=':')
-    ax.set_title(f'{label} Dose-Response')
+    ax.set_title(f'{label} Curve')
     ax.set_xlabel('Concentration (mg/L)')
-    ax.set_ylabel('Response (%)')
+    ax.set_ylabel(y_label)
     ax.legend()
     st.pyplot(fig)
 
@@ -437,67 +430,99 @@ def run_algae_analysis():
             plot_ec_lc_curve(pi, 'EyC', res)
 
 # -----------------------------------------------------------------------------
-# [분석 실행] 물벼룩/어류 (24h/48h 탭 분리 및 데이터 입력 추가)
+# [분석 실행] 물벼룩 (Daphnia) - 24h, 48h
 # -----------------------------------------------------------------------------
-def run_animal_analysis(test_name, label):
-    st.header(f"{test_name}")
+def run_daphnia_analysis():
+    st.header("🦐 물벼룩 급성 유영저해 시험")
     
-    key = f"data_{label}_final"
-    if key not in st.session_state:
-        # 24h, 48h (또는 96h) 컬럼 추가
-        st.session_state[key] = pd.DataFrame({
+    if 'daphnia_data' not in st.session_state:
+        st.session_state.daphnia_data = pd.DataFrame({
             '농도(mg/L)': [0.0, 6.25, 12.5, 25.0, 50.0, 100.0],
-            '총 개체수': [10, 10, 10, 10, 10, 10],
-            '반응 수 (24h)': [0, 0, 0, 2, 5, 10],
-            '반응 수 (48h/96h)': [0, 0, 1, 5, 9, 10]
+            '총 개체수': [20]*6,
+            '반응 수 (24h)': [0, 0, 0, 0, 0, 0],
+            '반응 수 (48h)': [0, 0, 1, 5, 18, 20]
         })
     
-    df_input = st.data_editor(st.session_state[key], num_rows="dynamic", use_container_width=True)
+    df_input = st.data_editor(st.session_state.daphnia_data, num_rows="dynamic", use_container_width=True)
     
     if st.button("상세 분석 실행"):
         df = df_input.copy()
+        t24, t48 = st.tabs(["24h 분석", "48h 분석"])
         
-        tab1, tab2 = st.tabs(["⏱️ 24시간 분석", "⏱️ 48시간/96시간 분석"])
-        
-        # --- 24시간 분석 ---
-        with tab1:
-            st.subheader(f"📊 {label}50 (24h) 분석 결과")
-            # 24h 데이터로 분석 실행
-            ec_lc_results, r2, method, plot_info = calculate_ec_lc_range(df, '반응 수 (24h)', 0, label, is_animal_test=True)
-            
-            idx_50 = [i for i, p in enumerate(ec_lc_results['p']) if p==50][0]
-            val_50 = ec_lc_results['value'][idx_50]
-            ci_50 = ec_lc_results['95% CI'][idx_50]
+        with t24:
+            st.subheader("24h EC50 분석")
+            ec_res, r2, met, pi = calculate_ec_lc_range(df, '반응 수 (24h)', 0, 'EC', True)
+            idx = [i for i, p in enumerate(ec_res['p']) if p==50][0]
             
             c1, c2, c3 = st.columns(3)
-            c1.metric(f"24h {label}50", f"**{val_50} mg/L**")
-            c2.metric("95% CI", ci_50)
-            c3.metric("Model", method)
+            c1.metric("24h EC50", f"**{ec_res['value'][idx]} mg/L**")
+            c2.metric("95% CI", ec_res['95% CI'][idx])
+            c3.metric("Model", met)
             
-            res_df = pd.DataFrame(ec_lc_results).rename(columns={'p': f'{label} (p)', 'value': 'Conc', '95% CI': '95% CI'})
-            st.dataframe(res_df.style.apply(lambda x: ['background-color: #e6f3ff']*len(x) if x[f'{label} (p)']==50 else ['']*len(x), axis=1))
-            plot_ec_lc_curve(plot_info, f"24h {label}", ec_lc_results)
+            st.dataframe(pd.DataFrame(ec_res).style.apply(lambda x: ['background-color: #e6f3ff']*len(x) if x[f'EC (p)']==50 else ['']*len(x), axis=1))
+            plot_ec_lc_curve(pi, "24h EC", ec_res, "Immobility (%)")
 
-        # --- 48h/96h 분석 ---
-        with tab2:
-            st.subheader(f"📊 {label}50 (48h/96h) 분석 결과")
-            # 48h 데이터로 분석 실행
-            ec_lc_results, r2, method, plot_info = calculate_ec_lc_range(df, '반응 수 (48h/96h)', 0, label, is_animal_test=True)
-            
-            idx_50 = [i for i, p in enumerate(ec_lc_results['p']) if p==50][0]
-            val_50 = ec_lc_results['value'][idx_50]
-            ci_50 = ec_lc_results['95% CI'][idx_50]
+        with t48:
+            st.subheader("48h EC50 분석")
+            ec_res, r2, met, pi = calculate_ec_lc_range(df, '반응 수 (48h)', 0, 'EC', True)
+            idx = [i for i, p in enumerate(ec_res['p']) if p==50][0]
             
             c1, c2, c3 = st.columns(3)
-            c1.metric(f"48h/96h {label}50", f"**{val_50} mg/L**")
-            c2.metric("95% CI", ci_50)
-            c3.metric("Model", method)
+            c1.metric("48h EC50", f"**{ec_res['value'][idx]} mg/L**")
+            c2.metric("95% CI", ec_res['95% CI'][idx])
+            c3.metric("Model", met)
             
-            res_df = pd.DataFrame(ec_lc_results).rename(columns={'p': f'{label} (p)', 'value': 'Conc', '95% CI': '95% CI'})
-            st.dataframe(res_df.style.apply(lambda x: ['background-color: #e6f3ff']*len(x) if x[f'{label} (p)']==50 else ['']*len(x), axis=1))
-            plot_ec_lc_curve(plot_info, f"48h/96h {label}", ec_lc_results)
+            st.dataframe(pd.DataFrame(ec_res).style.apply(lambda x: ['background-color: #e6f3ff']*len(x) if x[f'EC (p)']==50 else ['']*len(x), axis=1))
+            plot_ec_lc_curve(pi, "48h EC", ec_res, "Immobility (%)")
+
+# -----------------------------------------------------------------------------
+# [분석 실행] 어류 (Fish) - 24h, 48h, 72h, 96h + Slope
+# -----------------------------------------------------------------------------
+def run_fish_analysis():
+    st.header("🐟 어류 급성 독성 시험")
+    
+    if 'fish_data' not in st.session_state:
+        st.session_state.fish_data = pd.DataFrame({
+            '농도(mg/L)': [0.0, 6.25, 12.5, 25.0, 50.0, 100.0],
+            '총 개체수': [10]*6,
+            '반응 수 (24h)': [0]*6,
+            '반응 수 (48h)': [0]*6,
+            '반응 수 (72h)': [0, 0, 0, 2, 5, 8],
+            '반응 수 (96h)': [0, 0, 1, 4, 8, 10]
+        })
+    
+    df_input = st.data_editor(st.session_state.fish_data, num_rows="dynamic", use_container_width=True)
+    
+    if st.button("상세 분석 실행"):
+        df = df_input.copy()
+        tabs = st.tabs(["24h", "48h", "72h", "96h (Final)"])
+        times = ['24h', '48h', '72h', '96h']
+        
+        for i, t in enumerate(times):
+            with tabs[i]:
+                col_name = f'반응 수 ({t})'
+                st.subheader(f"{t} LC50 분석")
+                
+                ec_res, r2, met, pi = calculate_ec_lc_range(df, col_name, 0, 'LC', True)
+                idx = [i for i, p in enumerate(ec_res['p']) if p==50][0]
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric(f"{t} LC50", f"**{ec_res['value'][idx]} mg/L**")
+                c2.metric("95% CI", ec_res['95% CI'][idx])
+                c3.metric("Model", met)
+                
+                if t == '96h' and met == 'GLM Probit Analysis':
+                    slope_val = pi.get('slope', None)
+                    if slope_val:
+                        st.info(f"📐 **96h Slope:** {slope_val:.4f}")
+                
+                st.dataframe(pd.DataFrame(ec_res).style.apply(lambda x: ['background-color: #e6f3ff']*len(x) if x[f'LC (p)']==50 else ['']*len(x), axis=1))
+                
+                y_lab = "Lethality (%)" if t == '96h' else "Response (%)"
+                title_lab = f"{t} Concentration-Lethality" if t == '96h' else f"{t} LC"
+                plot_ec_lc_curve(pi, title_lab, ec_res, y_lab)
 
 if __name__ == "__main__":
     if "조류" in analysis_type: run_algae_analysis()
-    elif "물벼룩" in analysis_type: run_animal_analysis("🦐 물벼룩", "EC")
-    elif "어류" in analysis_type: run_animal_analysis("🐟 어류", "LC")
+    elif "물벼룩" in analysis_type: run_daphnia_analysis()
+    elif "어류" in analysis_type: run_fish_analysis()
