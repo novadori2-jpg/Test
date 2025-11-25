@@ -20,26 +20,21 @@ plt.rcParams['axes.unicode_minus'] = False
 
 st.title("🧬 생태독성 전문 분석기 (Optimal Pro Ver.)")
 st.markdown("""
-이 앱은 **OECD TG 201, 202, 203** 보고서 요구사항을 충족합니다.
-1. **조류:** 생장 곡선 및 농도-반응 곡선, Full Report.
-2. **물벼룩/어류:** Probit(GLM) 우선 적용, 실패 시 ICPIN(Bootstrap)으로 자동 전환.
+이 앱은 **CETIS Summary Report ("추출 1.pdf")** 스타일을 완벽하게 재현합니다.
+1. **분석:** Probit(GLM), ICPIN(Bootstrap CI) 자동 적용.
+2. **출력:** EC5~EC95 전 범위 산출, **EC50 강조**, 시간대별(24h~96h) 분석 리포트.
 """)
-st.divider()
 
 # -----------------------------------------------------------------------------
 # [사이드바] 시험 정보 입력
 # -----------------------------------------------------------------------------
 with st.sidebar:
-    st.header("📝 시험 정보 입력 (Report Info)")
-    
+    st.header("📝 시험 정보 입력")
     analysis_type = st.radio(
         "분석할 실험을 선택하세요",
         ["🟢 조류 성장저해 (Algae)", "🦐 물벼룩 유영저해 (Daphnia)", "🐟 어류 급성독성 (Fish)"]
     )
-    
-    st.markdown("---")
-    st.subheader("보고서 헤더 정보")
-    
+    st.divider()
     meta_input = {
         "study_no": st.text_input("Study No.", "GT21-00035"),
         "test_item": st.text_input("Test Item", "Test Substance A"),
@@ -62,14 +57,14 @@ def fig_to_base64(fig):
     return img_str
 
 # -----------------------------------------------------------------------------
-# [REPORT] CETIS 스타일 HTML 보고서 생성 함수
+# [REPORT] CETIS 스타일 HTML 보고서 생성 함수 (헤더 수정됨)
 # -----------------------------------------------------------------------------
-def generate_full_cetis_report(meta_info, stats_results, ec_results, detail_df, summary_df, dose_resp_fig, growth_fig=None, report_type="full"):
+def generate_full_cetis_report(meta_info, stats_results, ec_results, raw_df, summary_df, dose_resp_fig, growth_fig=None, report_type="full"):
     img_dr = fig_to_base64(dose_resp_fig)
     img_growth = fig_to_base64(growth_fig) if growth_fig else ""
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     
-    # --- 1. Point Estimate Rows ---
+    # 1. Point Estimate Rows
     pe_rows = ""
     target_ps = [5, 10, 20, 50, 80, 90, 95] 
     for i, p in enumerate(ec_results['p']):
@@ -79,9 +74,8 @@ def generate_full_cetis_report(meta_info, stats_results, ec_results, detail_df, 
             row_style = "background-color: #ffffcc; font-weight: bold;" if p == 50 else ""
             pe_rows += f"<tr style='{row_style}'><td>{meta_info['endpoint']}</td><td>EC{p}</td><td>{val}</td><td>{ci}</td><td>{meta_info['method_ec']}</td></tr>"
 
-    # --- 2. Data Summary Rows (수정: 헤더 누락 해결 및 데이터 매핑) ---
+    # 2. Data Summary Rows
     summ_rows = ""
-    
     if 'Concentration' in summary_df.columns: conc_col = 'Concentration'
     elif '농도(mg/L)' in summary_df.columns: conc_col = '농도(mg/L)'
     else: conc_col = summary_df.columns[0]
@@ -102,33 +96,37 @@ def generate_full_cetis_report(meta_info, stats_results, ec_results, detail_df, 
         cv = (s / m * 100) if m != 0 else 0
         
         if report_type == "simple" and meta_info.get('is_animal', False): 
-             # 동물 시험: 반응 수 자체가 아닌 반응률로 표시하는 것이 일반적이나, Summary에는 통계량 그대로 표시
-             # Effect 계산: (반응수 평균 / 총 개체수) * 100 (치사율/유영저해율)
              total_n = meta_info.get('total_n', 10)
              effect = (m / total_n) * 100
         else:
-             # 조류: (대조군 - 처리군) / 대조군 (저해율)
              effect = ((control_mean - m) / control_mean * 100) if control_mean != 0 else 0
 
         summ_rows += f"""
         <tr>
-            <td>{row[conc_col]}</td><td>{n}</td><td>{m:.4f}</td><td>{ci_min:.4f}</td><td>{ci_max:.4f}</td>
-            <td>{row['min']:.4f}</td><td>{row['max']:.4f}</td><td>{se:.4f}</td><td>{cv:.2f}%</td><td>{effect:.2f}%</td>
+            <td>{row[conc_col]}</td><td>{n}</td><td>{m:.4f}</td>
+            <td>{ci_min:.4f}</td><td>{ci_max:.4f}</td>
+            <td>{row['min']:.4f}</td><td>{row['max']:.4f}</td>
+            <td>{se:.4f}</td><td>{cv:.2f}%</td><td>{effect:.2f}%</td>
         </tr>"""
 
-    # --- 3. Detail Data Rows (수정: 계산된 Endpoint 값 표시) ---
+    # 3. Detail Data Rows
     detail_html = ""
     try:
-        # detail_df는 이미 Endpoint 값으로 변환되어 들어와야 함
-        c_cols = [c for c in detail_df.columns if 'Conc' in c or '농도' in c]
-        c_col = c_cols[0] if c_cols else detail_df.columns[0]
+        df_detail = raw_df.copy()
+        c_cols = [c for c in df_detail.columns if 'Conc' in c or '농도' in c]
+        c_col = c_cols[0] if c_cols else df_detail.columns[0]
+        v_cols = [c for c in df_detail.columns if c != c_col and 'Rep' not in c]
+        v_col = v_cols[0] if v_cols else df_detail.columns[1]
         
-        # 값 컬럼 찾기 (농도 이외의 컬럼 중 Rep가 아닌 것)
-        v_cols = [c for c in detail_df.columns if c != c_col and 'Rep' not in c]
-        v_col = v_cols[0] if v_cols else detail_df.columns[1] # Endpoint 값 컬럼
+        # 동물 시험의 경우 Raw Counts를 Rate로 변환하여 표시할지 여부 확인
+        # 여기서는 사용자가 "계산에 사용된 값"을 원했으므로, 
+        # 조류는 비성장률/수율 그대로, 동물은 반응수(마리)를 그대로 표시하거나 Rate로 변환.
+        # 동물 시험 Raw Data는 보통 마리수(Response Count)를 보여주는 것이 일반적이므로 그대로 둠.
+        # 만약 Rate를 원하면 아래 주석 해제:
+        # if meta_info.get('is_animal', False): df_detail[v_col] = df_detail[v_col] / meta_info.get('total_n', 10)
 
-        detail_df['Rep_Num'] = detail_df.groupby(c_col).cumcount() + 1
-        pivot_df = detail_df.pivot(index=c_col, columns='Rep_Num', values=v_col)
+        df_detail['Rep_Num'] = df_detail.groupby(c_col).cumcount() + 1
+        pivot_df = df_detail.pivot(index=c_col, columns='Rep_Num', values=v_col)
         
         detail_header = "<th>Conc-mg/L</th>" + "".join([f"<th>Rep {c}</th>" for c in pivot_df.columns])
         detail_body = ""
@@ -137,12 +135,12 @@ def generate_full_cetis_report(meta_info, stats_results, ec_results, detail_df, 
             detail_body += f"<tr><td>{conc}</td>{vals}</tr>"
             
         detail_html = f"""
-        <div class="section-title">Detail Data ({meta_info['endpoint']} Values)</div>
+        <div class="section-title">Detail Data (Raw Values)</div>
         <table><tr>{detail_header}</tr>{detail_body}</table>
         """
     except: detail_html = ""
 
-    # --- 4. Sections ---
+    # 4. Sections
     comparison_html = ""
     assumption_html = ""
     anova_html = ""
@@ -213,10 +211,21 @@ def generate_full_cetis_report(meta_info, stats_results, ec_results, detail_df, 
         {comparison_html}
 
         <div class="section-title">Point Estimate Summary</div>
-        <table><tr><th>Endpoint</th><th>Level</th><th>mg/L</th><th>95% CI</th><th>Method</th></tr>{pe_rows}</table>
+        <table>
+            <tr><th>Endpoint</th><th>Level</th><th>mg/L</th><th>95% CI</th><th>Method</th></tr>
+            {pe_rows}
+        </table>
 
         <div class="section-title">Summary of Data</div>
-        <table><tr><th>Conc</th><th>N</th><th>Mean</th><th>Min</th><th>Max</th><th>Std Dev</th><th>CV%</th><th>%Effect</th></tr>{summ_rows}</table>
+        <table>
+            <tr>
+                <th>Conc-mg/L</th><th>N</th><th>Mean</th>
+                <th>95% LCL</th><th>95% UCL</th>
+                <th>Min</th><th>Max</th>
+                <th>Std Err</th><th>CV%</th><th>%Effect</th>
+            </tr>
+            {summ_rows}
+        </table>
         
         {detail_html}
         {assumption_html}
@@ -234,11 +243,6 @@ def generate_full_cetis_report(meta_info, stats_results, ec_results, detail_df, 
 # [함수 1] ICPIN + Bootstrap CI 산출 로직
 # -----------------------------------------------------------------------------
 def get_icpin_values_with_ci(df_resp, endpoint, is_binary=False, total_col=None, response_col=None, n_boot=1000):
-    # (이전과 동일 - 생략)
-    final_out = {}
-    control_val = 0
-    inhibition_rates = []
-    
     df_temp = df_resp.copy()
     if 'Concentration' not in df_temp.columns:
         conc_col = [c for c in df_temp.columns if '농도' in c or 'Conc' in c][0]
@@ -268,8 +272,11 @@ def get_icpin_values_with_ci(df_resp, endpoint, is_binary=False, total_col=None,
     for level in ec_levels: main_results[level] = calc_icpin_ec(interpolator, level, control_val)
 
     boot_estimates = {l: [] for l in ec_levels}
-    groups = {} if (is_binary and total_col) else {c: df_temp[df_temp['Concentration']==c][endpoint].values for c in x_raw}
-    
+    # Bootstrap groups prep
+    groups = {}
+    if not (is_binary and total_col):
+         groups = {c: df_temp[df_temp['Concentration']==c][endpoint].values for c in x_raw}
+
     for _ in range(n_boot):
         boot_y_means = []
         for c in x_raw:
@@ -295,6 +302,7 @@ def get_icpin_values_with_ci(df_resp, endpoint, is_binary=False, total_col=None,
 
     final_out = {}
     max_conc = x_raw.max()
+    
     for level in ec_levels:
         val = main_results[level]
         boots = boot_estimates[level]
@@ -302,10 +310,11 @@ def get_icpin_values_with_ci(df_resp, endpoint, is_binary=False, total_col=None,
         if np.isnan(val) or len(boots) < 20: ci_str = "N/C"
         else: ci_str = f"({np.percentile(boots, 2.5):.4f} ~ {np.percentile(boots, 97.5):.4f})"
         final_out[f'EC{level}'] = {'val': val_str, 'lcl': ci_str}
+    
     return final_out, control_val, inhibition_rates
 
 # -----------------------------------------------------------------------------
-# [함수 2] 상세 통계 분석 (NOEC/LOEC)
+# [함수 2] 상세 통계 분석
 # -----------------------------------------------------------------------------
 def perform_detailed_stats(df, endpoint_col, endpoint_name, return_details=False):
     st.markdown(f"### 📊 {endpoint_name} 통계 검정 상세 보고서")
@@ -313,10 +322,9 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name, return_details=False
     concentrations = sorted(groups.keys())
     control_group = groups[0]
     num_groups = len(concentrations)
-    
     summary = df.groupby('농도(mg/L)')[endpoint_col].agg(['mean', 'std', 'min', 'max', 'count']).reset_index()
-    if num_groups < 2: return None, None, summary
     
+    if num_groups < 2: return None, None, summary
     st.dataframe(summary.style.format("{:.4f}"))
     
     stats_details = {}
@@ -324,7 +332,6 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name, return_details=False
     for c in concentrations: resid.extend(np.array(groups[c]) - np.mean(groups[c]))
     s_stat, s_p = stats.shapiro(resid) if len(resid)>3 else (0,1)
     stats_details.update({'shapiro_stat': s_stat, 'shapiro_p': s_p, 'shapiro_res': 'Pass' if s_p>0.01 else 'Fail'})
-    
     l_stat, l_p = stats.levene(*[groups[c] for c in concentrations])
     stats_details.update({'levene_stat': l_stat, 'levene_p': l_p, 'levene_res': 'Pass' if l_p>0.01 else 'Fail'})
 
@@ -359,7 +366,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
     max_conc = dose_resp['농도(mg/L)'].max()
     p_values = np.arange(5, 100, 5) / 100
     ec_res = {'p': [], 'value': [], 'status': [], '95% CI': []}
-
+    
     if is_animal_test:
         total_mean = df.groupby('농도(mg/L)')['총 개체수'].mean()
         dose_resp_probit['Inhibition'] = dose_resp_probit[endpoint_col] / total_mean[dose_resp_probit['농도(mg/L)']].values
@@ -379,11 +386,12 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         
         grouped.loc[grouped['Response']==grouped['Total'], 'Response'] *= 0.999
         grouped.loc[grouped['Response']==0, 'Response'] = grouped['Total'] * 0.001
+        if grouped['Response'].sum() <= 0: raise ValueError
         
         model = sm.GLM(grouped['Response'], sm.add_constant(grouped['Log_Conc']), family=families.Binomial(), exposure=grouped['Total']).fit(disp=0)
         intercept, slope = model.params['const'], model.params['Log_Conc']
         if slope <= 0: raise ValueError
-
+        
         cov = model.cov_params()
         log_lc50 = -intercept/slope
         var_log = (1/slope**2)*(cov.loc['const','const'] + log_lc50**2*cov.loc['Log_Conc','Log_Conc'] + 2*log_lc50*cov.loc['const','Log_Conc'])
@@ -397,12 +405,11 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
             ec_res['value'].append(val_s)
             ec_res['status'].append("✅ Probit")
             ec_res['95% CI'].append(ci_50 if int(p*100)==50 else "N/A")
-        
         method_used = "GLM Probit Analysis"
         plot_info = {'type':'probit', 'x': grouped['Log_Conc'], 'y': stats.norm.ppf(grouped['Response']/grouped['Total']), 
                      'slope':slope, 'intercept':intercept, 'x_original': grouped['농도(mg/L)'], 'y_original': grouped['Response']/grouped['Total']}
     except:
-        ec_res = {'p': [], 'value': [], 'status': [], '95% CI': []}
+        ec_res = {'p': [], 'value': [], 'status': [], '95% CI': []} # Reset
         df_icpin = df.copy().rename(columns={df.columns[0]:'Concentration'})
         conc_col = [c for c in df.columns if '농도' in c][0]
         df_icpin = df.copy().rename(columns={conc_col: 'Concentration'})
@@ -443,7 +450,7 @@ def plot_ec_lc_curve(plot_info, label, ec_lc_results, y_label="Response (%)"):
     if ec50_val and '>' not in str(ec50_val) and 'n/a' not in str(ec50_val):
         try: ax.axvline(float(ec50_val), color='green', linestyle='--', label=f'EC50: {ec50_val}')
         except: pass
-        
+    
     ax.axhline(50, color='red', linestyle=':')
     ax.set_xlabel('Concentration (mg/L)'); ax.set_ylabel(y_label)
     ax.legend(); ax.set_title(f'{label} Curve')
@@ -495,18 +502,13 @@ def run_algae_analysis():
             res, _, met, pi = calculate_ec_lc_range(df, '비성장률', c_rate, 'ErC', False)
             idx = res['p'].index(50)
             st.metric("ErC50", f"**{res['value'][idx]}**", f"CI: {res['95% CI'][idx]}")
-            
-            res_df = pd.DataFrame(res)
-            st.dataframe(res_df.style.apply(lambda x: ['background-color: #ffffcc; font-weight: bold']*len(x) if x['p']==50 else ['']*len(x), axis=1))
-            
+            st.dataframe(pd.DataFrame(res).style.apply(lambda x: ['background-color: #ffffcc; font-weight: bold']*len(x) if x['p']==50 else ['']*len(x), axis=1))
             fig = plot_ec_lc_curve(pi, 'ErC', res, "Inhibition (%)")
             st.pyplot(fig)
             
             meta.update({'endpoint':'Specific Growth Rate', 'method_ec': met, 'col_name':'비성장률'})
-            # Detail Data DF 생성 (Raw Data)
-            df_detail = df[['농도(mg/L)', '비성장률']].rename(columns={'농도(mg/L)':'Concentration', '비성장률':'Specific Growth Rate'})
-            
-            html = generate_full_cetis_report(meta, stats_res, res, df_detail, summ.rename(columns={'농도(mg/L)':'Concentration'}), fig, g_fig, "full")
+            raw_renamed = df.rename(columns={'농도(mg/L)':'Concentration', '비성장률':'Specific Growth Rate'})
+            html = generate_full_cetis_report(meta, stats_res, res, raw_renamed, summ.rename(columns={'농도(mg/L)':'Concentration', '비성장률':'Specific Growth Rate'}), fig, g_fig, "full")
             st.download_button("📥 보고서 다운로드", html, "Algae_Rate_Report.html")
             
         with tab2:
@@ -514,16 +516,13 @@ def run_algae_analysis():
             res, _, met, pi = calculate_ec_lc_range(df, '수율', c_yield, 'EyC', False)
             idx = res['p'].index(50)
             st.metric("EyC50", f"**{res['value'][idx]}**", f"CI: {res['95% CI'][idx]}")
-            
-            res_df = pd.DataFrame(res)
-            st.dataframe(res_df.style.apply(lambda x: ['background-color: #ffffcc; font-weight: bold']*len(x) if x['p']==50 else ['']*len(x), axis=1))
-            
+            st.dataframe(pd.DataFrame(res).style.apply(lambda x: ['background-color: #ffffcc; font-weight: bold']*len(x) if x['p']==50 else ['']*len(x), axis=1))
             fig = plot_ec_lc_curve(pi, 'EyC', res, "Inhibition (%)")
             st.pyplot(fig)
             
             meta.update({'endpoint':'Yield', 'method_ec': met, 'col_name':'수율'})
-            df_detail = df[['농도(mg/L)', '수율']].rename(columns={'농도(mg/L)':'Concentration', '수율':'Yield'})
-            html = generate_full_cetis_report(meta, stats_res, res, df_detail, summ.rename(columns={'농도(mg/L)':'Concentration'}), fig, g_fig, "full")
+            raw_renamed = df.rename(columns={'농도(mg/L)':'Concentration', '수율':'Yield'})
+            html = generate_full_cetis_report(meta, stats_res, res, raw_renamed, summ.rename(columns={'농도(mg/L)':'Concentration', '수율':'Yield'}), fig, g_fig, "full")
             st.download_button("📥 보고서 다운로드", html, "Algae_Yield_Report.html")
 
 def run_animal_analysis(test_name, label):
@@ -550,24 +549,19 @@ def run_animal_analysis(test_name, label):
                 
                 idx = res['p'].index(50)
                 st.metric(f"{t} {label}50", f"**{res['value'][idx]}**", f"CI: {res['95% CI'][idx]}")
-                
-                res_df = pd.DataFrame(res)
-                st.dataframe(res_df.style.apply(lambda x: ['background-color: #ffffcc; font-weight: bold']*len(x) if x['p']==50 else ['']*len(x), axis=1))
+                st.dataframe(pd.DataFrame(res).style.apply(lambda x: ['background-color: #ffffcc; font-weight: bold']*len(x) if x['p']==50 else ['']*len(x), axis=1))
                 
                 fig = plot_ec_lc_curve(pi, label, res, "Response (%)")
                 st.pyplot(fig)
                 
                 meta = meta_input.copy()
                 meta.update({'test_type': test_name, 'endpoint': label, 'method_ec': met, 'is_animal': True, 'total_n': df['총 개체수'].mean(), 'col_name': col})
+                raw_renamed = df.rename(columns={'농도(mg/L)':'Concentration', col: 'Response'})
                 
-                # Detail Data DF (Raw)
-                # 동물 시험은 요약 데이터이므로 Raw Data Table은 Response를 표시
-                df_detail = df[['농도(mg/L)', col]].rename(columns={'농도(mg/L)':'Concentration', col: 'Response'})
-                
-                html = generate_full_cetis_report(meta, None, res, df_detail, summ.rename(columns={'농도(mg/L)':'Concentration'}), fig, None, "simple")
-                st.download_button("📥 보고서 다운로드", html, f"{label}_{t}_Report.html", key=f"dl_{t}")
+                html = generate_full_cetis_report(meta, None, res, raw_renamed, summ.rename(columns={'농도(mg/L)':'Concentration', col:'Response'}), fig, None, "simple")
+                st.download_button(f"📥 보고서 다운로드", html, f"{label}_{t}_Report.html", key=f"dl_{t}")
 
 if __name__ == "__main__":
     if "조류" in analysis_type: run_algae_analysis()
-    elif "물벼룩" in analysis_type: run_animal_analysis("🦐 물벼룩 급성 유영저해", "EC")
-    elif "어류" in analysis_type: run_animal_analysis("🐟 어류 급성 독성", "LC")
+    elif "물벼룩" in analysis_type: run_animal_analysis("🦐 물벼룩", "EC")
+    elif "어류" in analysis_type: run_animal_analysis("🐟 어류", "LC")
