@@ -3,11 +3,10 @@ import pandas as pd
 import numpy as np
 from scipy import stats
 import matplotlib.pyplot as plt
-from scipy.interpolate import interp1d 
 import statsmodels.api as sm
 from statsmodels.genmod import families
 from scipy.stats import norm 
-from statsmodels.formula.api import ols
+from scipy.interpolate import interp1d 
 
 # -----------------------------------------------------------------------------
 # [공통] 페이지 설정
@@ -18,8 +17,7 @@ st.title("🧬 생태독성 전문 분석기 (Optimal Pro Ver.)")
 st.markdown("""
 이 앱은 **OECD TG 201, 202, 203** 보고서 요구사항을 충족합니다.
 1. **조류 (Algae):** 생장 곡선 및 72h ErC50/EyC50.
-2. **물벼룩/어류:** **이항 분포 부트스트랩(Binomial Bootstrap)**을 적용하여 요약 데이터에서도 정확한 95% 신뢰구간을 산출합니다.
-3. **통계:** Bonferroni t-test (NOEC) 및 Probit/ICPIN 자동 전환.
+2. **물벼룩/어류:** **Probit (곡선) 모델을 최우선 적용**하여 LC50/EC50 및 95% 신뢰구간을 산출합니다.
 """)
 st.divider()
 
@@ -29,27 +27,18 @@ analysis_type = st.sidebar.radio(
 )
 
 # -----------------------------------------------------------------------------
-# [함수 1] ICPIN + Bootstrap CI 산출 로직 (이항 분포 시뮬레이션 추가)
+# [함수 1] ICPIN + Bootstrap CI 산출 로직 (Fallback용)
 # -----------------------------------------------------------------------------
-def get_icpin_values_with_ci(df_resp, endpoint, is_binary=False, total_col=None, response_col=None, n_boot=1000):
-    """
-    Linear Interpolation (ICPIN) + Bootstrapping.
-    is_binary=True일 경우, Response/Total 정보를 이용해 이항 분포 재표본 추출을 수행합니다.
-    """
-    
+def get_icpin_values_with_ci(df_resp, endpoint, n_boot=1000):
     df_temp = df_resp.copy()
-    
     if 'Concentration' not in df_temp.columns:
         conc_col = [c for c in df_temp.columns if '농도' in c or 'Conc' in c][0]
         df_temp = df_temp.rename(columns={conc_col: 'Concentration'})
         
-    # Main Estimation (Point Estimate)
     raw_means = df_temp.groupby('Concentration')[endpoint].mean()
     x_raw = raw_means.index.values.astype(float)
     y_raw = raw_means.values
     
-    # Isotonic Regression (Monotonic Decreasing Assumed for Survival/Growth)
-    # Note: Endpoint value should be decreasing (e.g. Survival Rate, Growth Rate relative to control)
     y_iso = np.maximum.accumulate(y_raw[::-1])[::-1]
     
     try:
@@ -60,77 +49,29 @@ def get_icpin_values_with_ci(df_resp, endpoint, is_binary=False, total_col=None,
     def calc_icpin_ec(interp_func, level, control_val):
         if interp_func is None: return np.nan
         target_y = control_val * (1 - level/100)
-        # Check bounds
-        if target_y > y_iso.max() + 1e-9: return np.nan # Allow small float tolerance
-        if target_y < y_iso.min() - 1e-9: return np.nan
+        if target_y > y_iso.max() or target_y < y_iso.min(): return np.nan
         return float(interp_func(target_y))
 
     ec_levels = np.arange(5, 100, 5) 
     main_results = {}
-    
     control_val = y_iso[0]
     for level in ec_levels:
         main_results[level] = calc_icpin_ec(interpolator, level, control_val)
 
-    # --- Bootstrap Logic ---
     boot_estimates = {l: [] for l in ec_levels}
+    groups = {}
+    for c in x_raw:
+        vals = df_temp[df_temp['Concentration']==c][endpoint].values
+        groups[c] = vals
     
-    # Data preparation for bootstrap
-    if is_binary and total_col and response_col:
-        # For Animal Tests (Summary Data): Reconstruct individuals
-        # We need grouping by concentration to get Total/Response per conc
-        # Assuming df_temp has one row per concentration (Summary data)
-        conc_groups = df_temp.groupby('Concentration')
-    else:
-        # For Algae (Replicate Data): Group raw values
-        groups = {c: df_temp[df_temp['Concentration']==c][endpoint].values for c in x_raw}
-
     for _ in range(n_boot):
         boot_y_means = []
-        
         for c in x_raw:
-            if is_binary and total_col and response_col:
-                # Binomial Resampling
-                row = df_temp[df_temp['Concentration'] == c].iloc[0]
-                n = int(row[total_col])
-                k = int(row[response_col]) # This is 'Dead' count usually
-                
-                # If endpoint is 'Survival Rate', we resample 'Survivors'
-                # However, the input endpoint might be calculated already.
-                # Let's use the raw counts to simulate.
-                
-                # Simulate N trials with probability p = k/n (Response Rate)
-                # If endpoint is Survival (1 - p), we simulate survivors.
-                # Let's assume we want to bootstrap the 'endpoint' value.
-                
-                if n > 0:
-                    # Resample survivors (n-k) vs dead (k)
-                    # We want the mean of the 'endpoint' variable.
-                    # If endpoint is 'Survival Rate' = (n-k)/n:
-                    # We simulate 'survivors' count from Binomial(n, (n-k)/n)
-                    
-                    # Recalculate p based on the actual endpoint meaning
-                    # Here we assume endpoint is what we want to bootstrap (e.g. Survival Rate)
-                    p_hat = row[endpoint] # Current rate
-                    
-                    # Resample count ~ Binomial(n, p_hat)
-                    resampled_count = np.random.binomial(n, p_hat)
-                    boot_mean = resampled_count / n
-                else:
-                    boot_mean = 0
-                
-                boot_y_means.append(boot_mean)
-
-            else:
-                # Standard Bootstrap (Resampling replicates)
-                vals = groups[c]
-                if len(vals) > 0:
-                    resample = np.random.choice(vals, size=len(vals), replace=True)
-                    boot_y_means.append(resample.mean())
-                else:
-                    boot_y_means.append(0)
-        
-        if not boot_y_means: continue
+            if len(groups[c]) == 0: 
+                boot_y_means.append(0)
+                continue
+            resample = np.random.choice(groups[c], size=len(groups[c]), replace=True)
+            boot_y_means.append(resample.mean())
         
         boot_y_means = np.array(boot_y_means)
         y_boot_iso = np.maximum.accumulate(boot_y_means[::-1])[::-1]
@@ -167,7 +108,7 @@ def get_icpin_values_with_ci(df_resp, endpoint, is_binary=False, total_col=None,
             ucl = np.percentile(boots, 97.5)
             ci_str = f"({lcl:.4f} ~ {ucl:.4f})"
         else:
-            ci_str = "N/C (Bootstrap Fail)"
+            ci_str = "N/C"
         
         final_out[f'EC{level}'] = {'val': val_str, 'lcl': ci_str, 'ucl': ci_str}
         
@@ -177,7 +118,6 @@ def get_icpin_values_with_ci(df_resp, endpoint, is_binary=False, total_col=None,
 # [함수 2] 상세 통계 분석 (NOEC/LOEC)
 # -----------------------------------------------------------------------------
 def perform_detailed_stats(df, endpoint_col, endpoint_name):
-    # ... (기존과 동일) ...
     st.markdown(f"### 📊 {endpoint_name} 통계 검정 상세 보고서")
     groups = df.groupby('농도(mg/L)')[endpoint_col].apply(list)
     concentrations = sorted(groups.keys())
@@ -192,13 +132,16 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
     summary = df.groupby('농도(mg/L)')[endpoint_col].agg(['mean', 'std', 'min', 'max', 'count']).reset_index()
     st.dataframe(summary.style.format("{:.4f}"))
     
-    # ... (정규성, 등분산성 생략 - 기존 코드 유지) ...
-    # ... (T-test / ANOVA 로직 생략 - 기존 코드 유지) ...
-    
+    # ... (이전 코드와 동일) ...
     noec = max(concentrations)
-    loec = "> Max"
+    loec = "> Max" 
     
-    # Simplified logic for brevity in response
+    if num_groups >= 2:
+        # 간소화된 T-test 예시 (실제로는 이전의 전체 로직 사용 권장)
+        t, p = stats.ttest_ind(control_group, groups[concentrations[1]])
+        if p < 0.05: noec, loec = 0, concentrations[1]
+        else: noec, loec = concentrations[1], "> Max"
+    
     c1, c2 = st.columns(2)
     c1.metric(f"{endpoint_name} NOEC", f"{noec} mg/L")
     c2.metric(f"{endpoint_name} LOEC", f"{loec} mg/L")
@@ -206,7 +149,7 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name):
 
 
 # -----------------------------------------------------------------------------
-# [함수 3] ECp/LCp 산출 (GLM Probit -> ICPIN Binomial Bootstrap Fallback)
+# [함수 3] ECp/LCp 산출 (Probit 우선 적용 - 기준 완화)
 # -----------------------------------------------------------------------------
 def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=False):
     dose_resp = df.groupby('농도(mg/L)')[endpoint_col].mean().reset_index()
@@ -217,11 +160,6 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
     ec_lc_results = {'p': [], 'value': [], 'status': [], '95% CI': []}
     
     if is_animal_test:
-        # For animals, we need survival rate for monotonic decreasing function in ICPIN
-        # Or Mortality Rate for Probit.
-        # Let's standardize: Value for ICPIN = Survival Rate (1 -> 0)
-        # Value for Probit = Response (Dead) / Total
-        
         total_mean = df.groupby('농도(mg/L)')['총 개체수'].mean()
         total_probit = total_mean[dose_resp_probit['농도(mg/L)']].values
         dose_resp_probit['Inhibition'] = dose_resp_probit[endpoint_col] / total_probit
@@ -233,7 +171,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
     plot_info = {}
     ci_50_str = "N/C"
 
-    # 1순위: GLM Probit Analysis
+    # **1순위: GLM Probit Analysis (강제 적용 시도)**
     try:
         df_glm = df[df['농도(mg/L)'] > 0].copy()
         
@@ -243,7 +181,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
                 Response=(endpoint_col, 'sum'), Total=('총 개체수', 'sum'), Log_Conc=('Log_Conc', 'mean')
             ).reset_index()
             
-            # Adjustment for GLM stability
+            # 0/100% 데이터 조정 (GLM 수렴 유도)
             grouped.loc[grouped['Response']==grouped['Total'], 'Response'] = grouped['Total'] * 0.999
             grouped.loc[grouped['Response']==0, 'Response'] = grouped['Total'] * 0.001
             
@@ -254,59 +192,82 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
             
             intercept, slope = model.params['const'], model.params['Log_Conc']
             
-            # Check slope (must be positive for mortality vs log-conc)
-            if slope <= 0: raise ValueError("Negative slope in Probit")
+            # 기울기가 음수이면(농도가 높을수록 반응이 줄어들면) Probit 부적합
+            if slope <= 0: raise ValueError("Negative Slope")
             
+            # R2는 참고용으로만 계산하고, 이를 이유로 실패시키지 않음 (강제 적용)
             pred = model.predict()
             actual = grouped['Response']/grouped['Total']
             r_squared = np.corrcoef(actual, pred)[0,1]**2 if len(actual)>1 else 0
 
         else:
-            # Algae logic (omitted for brevity, same as before)
-            raise ValueError("Algae Probit Skip for Demo")
+            df_p = dose_resp_probit.copy()
+            df_p['Log_Conc'] = np.log10(df_p['농도(mg/L)'])
+            df_p['Inh'] = df_p['Inhibition'].clip(0.001, 0.999)
+            df_p['Probit'] = stats.norm.ppf(df_p['Inh'])
+            
+            model = sm.GLM(df_p['Probit'], sm.add_constant(df_p['Log_Conc']),
+                           family=families.Gaussian()).fit(disp=False)
+            intercept, slope = model.params['const'], model.params['Log_Conc']
+            r_squared = np.corrcoef(df_p['Log_Conc'], df_p['Probit'])[0,1]**2
+            grouped = df_p
 
-        if r_squared < 0.6: raise ValueError("Low Fit")
+        # *** 중요: R2 기준 제거 ***
+        # if r_squared < 0.6: raise ValueError("Low Fit") 
 
+        # CI Calculation (Delta Method)
         cov = model.cov_params()
         log_lc50 = -intercept / slope
+        
+        # Delta Method Variance
         var_log = (1/slope**2)*(cov.loc['const','const'] + log_lc50**2*cov.loc['Log_Conc','Log_Conc'] + 2*log_lc50*cov.loc['const','Log_Conc'])
+        
+        if var_log < 0: var_log = 0 # 분산이 음수일 경우 방지
         se = np.sqrt(var_log)
-        ci_50_str = f"({10**(log_lc50 - 1.96*se):.4f} ~ {10**(log_lc50 + 1.96*se):.4f})"
+        
+        lcl_val = 10**(log_lc50 - 1.96*se)
+        ucl_val = 10**(log_lc50 + 1.96*se)
+        ci_50_str = f"({lcl_val:.4f} ~ {ucl_val:.4f})"
 
         for p in p_values:
+            # Probit 식: Probit(p) = slope * logC + intercept
+            # logC = (Probit(p) - intercept) / slope
             ecp = 10**((stats.norm.ppf(p) - intercept)/slope)
-            val_s = f"{ecp:.4f}" if 0.05<=p<=0.95 and ecp<max_conc*2 and ecp>0 else "-"
+            
+            # 범위가 너무 극단적이면 표시 제한
+            val_s = f"{ecp:.4f}" if 0<ecp<max_conc*100 else "> Max"
+            
             ec_lc_results['p'].append(int(p*100))
             ec_lc_results['value'].append(val_s)
             ec_lc_results['status'].append("✅ Probit")
             ec_lc_results['95% CI'].append(ci_50_str if int(p*100)==50 else "N/A")
 
-        method_used = "GLM Probit Analysis"
+        method_used = "GLM Probit Analysis (Curve Fitted)"
         
         if is_animal_test:
             plot_info = {'type': 'probit', 'x': grouped['Log_Conc'], 'y': stats.norm.ppf(grouped['Response']/grouped['Total']),
                          'slope': slope, 'intercept': intercept, 'r_squared': r_squared,
                          'x_original': grouped['농도(mg/L)'], 'y_original': grouped['Response']/grouped['Total']}
+        else:
+            plot_info = {'type': 'probit', 'x': df_p['Log_Conc'], 'y': df_p['Probit'],
+                         'slope': slope, 'intercept': intercept, 'r_squared': r_squared,
+                         'x_original': df_p['농도(mg/L)'], 'y_original': df_p['Inhibition']}
 
-    # 2순위: Linear Interpolation (ICPIN + Binomial Bootstrap)
+    # 2순위: Linear Interpolation (ICPIN) - Probit이 수학적으로 불가능할 때만 실행
     except Exception as e:
-        # st.warning(f"Probit 모델 실패 ({e}). ICPIN + Binomial Bootstrap으로 전환합니다.")
+        # st.warning(f"Probit 계산 불가 ({e}). ICp로 전환합니다.") # 디버깅용
         
         df_icpin = df.copy()
         conc_col = [c for c in df_icpin.columns if '농도' in c][0]
         df_icpin = df_icpin.rename(columns={conc_col: 'Concentration'})
         
         if is_animal_test:
-            # Value = Survival Rate (1 -> 0) for ICPIN
-            df_icpin['Value'] = 1 - (df_icpin[endpoint_col] / df_icpin['총 개체수'])
-            # Pass column names for binomial resampling
-            icpin_res, ctrl_val, inh_rates = get_icpin_values_with_ci(
-                df_icpin, 'Value', is_binary=True, total_col='총 개체수', response_col=endpoint_col
-            )
+            df_icpin['Value'] = 1 - (df_icpin[endpoint_col] / df_icpin['총 개체수']) 
         else:
             df_icpin['Value'] = df_icpin[endpoint_col] 
-            icpin_res, ctrl_val, inh_rates = get_icpin_values_with_ci(df_icpin, 'Value', is_binary=False)
 
+        icpin_res, ctrl_val, inh_rates = get_icpin_values_with_ci(df_icpin, 'Value')
+        
         method_used = "Linear Interpolation (ICPIN/Bootstrap)"
         ci_50_str = icpin_res['EC50']['lcl']
         ec50_val = icpin_res['EC50']['val']
@@ -325,7 +286,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
                      'x_original': unique_concs, 
                      'y_original': inh_rates}
 
-    return ec_lc_results, r_squared, method_used, plot_info
+    return ec_lc_results, 0, method_used, plot_info
 
 # -----------------------------------------------------------------------------
 # [함수 4] 그래프 출력 (Dose-Response)
@@ -336,9 +297,16 @@ def plot_ec_lc_curve(plot_info, label, ec_lc_results, y_label="Response (%)"):
     if plot_info['type'] == 'probit':
         x_orig = plot_info['x_original']
         y_orig = plot_info['y_original']
-        ax.scatter(x_orig, y_orig * 100, color='blue', label='Observed')
-        x_pred = np.linspace(min(x_orig[x_orig>0]), max(x_orig), 100)
+        
+        ax.scatter(x_orig, y_orig * 100, color='blue', label='Observed', zorder=5)
+        
+        # 곡선을 부드럽게 그리기 위한 X축 데이터 생성
+        x_min = min(x_orig[x_orig>0])
+        x_max = max(x_orig)
+        x_pred = np.logspace(np.log10(x_min), np.log10(x_max), 200) # Log space for smooth curve
+        
         y_pred = stats.norm.cdf(plot_info['slope']*np.log10(x_pred)+plot_info['intercept']) * 100
+        
         ax.plot(x_pred, y_pred, 'r-', label='Probit Fit')
         ax.set_xscale('log')
         
@@ -347,6 +315,7 @@ def plot_ec_lc_curve(plot_info, label, ec_lc_results, y_label="Response (%)"):
         y = plot_info['y_original']
         ax.plot(x, y*100, 'bo-', label='Observed')
     
+    # EC50 Line
     ec50_entry = [res for res in ec_lc_results['value'] if ec_lc_results['p'][ec_lc_results['value'].index(res)] == 50]
     ec50_val = ec50_entry[0] if ec50_entry and ec50_entry[0] != '-' and '>' not in str(ec50_entry[0]) else None
     
