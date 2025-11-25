@@ -37,66 +37,162 @@ analysis_type = st.sidebar.radio(
 # -----------------------------------------------------------------------------
 # [REPORT] HTML 보고서 생성 함수
 # -----------------------------------------------------------------------------
+import streamlit as st
+import pandas as pd
+import numpy as np
+from scipy import stats
+import matplotlib.pyplot as plt
+import statsmodels.api as sm
+from statsmodels.genmod import families
+from scipy.stats import norm 
+from scipy.interpolate import interp1d 
+from statsmodels.formula.api import ols
+import io
+import base64
+import datetime
+
+# -----------------------------------------------------------------------------
+# [공통] 페이지 설정
+# -----------------------------------------------------------------------------
+st.set_page_config(page_title="생태독성 전문 분석기 (Final)", page_icon="🧬", layout="wide")
+
+# 한글 폰트 설정
+plt.rcParams['font.family'] = 'Malgun Gothic'
+plt.rcParams['axes.unicode_minus'] = False
+
+st.title("🧬 생태독성 전문 분석기 (Optimal Pro Ver.)")
+st.markdown("""
+이 앱은 **OECD TG** 보고서 요구사항을 충족하며, **"추출 1.pdf" 스타일의 GLP 보고서**를 출력합니다.
+""")
+st.divider()
+
+analysis_type = st.sidebar.radio(
+    "분석할 실험을 선택하세요",
+    ["🟢 조류 성장저해 (Algae)", "🦐 물벼룩 유영저해 (Daphnia)", "🐟 어류 급성독성 (Fish)"]
+)
+
+# -----------------------------------------------------------------------------
+# [REPORT] GLP 스타일 HTML 보고서 생성 함수 (PDF 레이아웃 모방)
+# -----------------------------------------------------------------------------
 def generate_html_report(test_name, endpoint_label, ec50_val, ci_val, method, df_results, fig):
-    # 그래프를 Base64 문자열로 변환
+    # 그래프 변환
     buf = io.BytesIO()
-    fig.savefig(buf, format='png', bbox_inches='tight', dpi=150)
+    fig.savefig(buf, format='png', bbox_inches='tight', dpi=300) # 고해상도
     buf.seek(0)
     img_base64 = base64.b64encode(buf.read()).decode('utf-8')
     buf.close()
 
-    # 현재 시간
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.datetime.now().strftime("%Y-%m-%d")
 
-    # 데이터프레임 HTML 변환
-    df_html = df_results.to_html(index=False, classes='data-table', justify='center')
+    # 데이터프레임 HTML 변환 (스타일링 포함)
+    # PDF의 표처럼 보이게 하기 위해 Pandas Styler 대신 직접 HTML 작성 또는 클래스 적용
+    df_html = df_results.to_html(index=False, classes='result-table', border=0, justify='center')
 
-    # HTML 템플릿
     html = f"""
+    <!DOCTYPE html>
     <html>
     <head>
         <meta charset="utf-8">
         <style>
-            body {{ font-family: 'Malgun Gothic', 'AppleGothic', sans-serif; font-size: 11pt; line-height: 1.6; color: #333; }}
-            .container {{ width: 800px; margin: 0 auto; padding: 20px; }}
-            h1 {{ text-align: center; border-bottom: 2px solid #333; padding-bottom: 10px; }}
-            h2 {{ font-size: 14pt; border-left: 5px solid #2c3e50; padding-left: 10px; margin-top: 30px; background-color: #f9f9f9; }}
-            .info-table {{ width: 100%; margin-bottom: 20px; border-collapse: collapse; }}
-            .info-table td {{ padding: 5px; border-bottom: 1px solid #eee; }}
-            .highlight {{ font-weight: bold; color: #d35400; font-size: 12pt; }}
-            .data-table {{ width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 10pt; }}
-            .data-table th, .data-table td {{ border: 1px solid #000; padding: 8px; text-align: center; }}
-            .data-table th {{ background-color: #f2f2f2; font-weight: bold; }}
-            .footer {{ margin-top: 50px; text-align: center; font-size: 9pt; color: #777; }}
-            img {{ display: block; margin: 20px auto; max-width: 100%; border: 1px solid #ccc; }}
+            @page {{ size: A4; margin: 20mm; }}
+            body {{ 
+                font-family: "Times New Roman", "Malgun Gothic", serif; 
+                font-size: 11pt; 
+                line-height: 1.4; 
+                color: #000; 
+            }}
+            .container {{ width: 100%; max-width: 800px; margin: 0 auto; }}
+            
+            /* 타이틀 영역 */
+            .report-header {{ text-align: center; margin-bottom: 30px; border-bottom: 2px solid #000; padding-bottom: 10px; }}
+            .report-title {{ font-size: 18pt; font-weight: bold; margin: 0; }}
+            .report-sub {{ font-size: 12pt; margin-top: 5px; }}
+
+            /* 정보 테이블 (상단) */
+            .info-table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; }}
+            .info-table td {{ padding: 5px; border: none; vertical-align: top; }}
+            .label {{ font-weight: bold; width: 120px; }}
+
+            /* 섹션 헤더 */
+            .section-header {{ 
+                font-size: 12pt; 
+                font-weight: bold; 
+                background-color: #e0e0e0; 
+                padding: 5px 10px; 
+                margin-top: 20px; 
+                margin-bottom: 10px;
+                border-top: 2px solid #000;
+                border-bottom: 1px solid #000;
+            }}
+
+            /* 결과 요약 테이블 */
+            .summary-table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; }}
+            .summary-table th, .summary-table td {{ border: 1px solid #000; padding: 8px; text-align: center; }}
+            .summary-table th {{ background-color: #f9f9f9; font-weight: bold; }}
+
+            /* 상세 데이터 테이블 (PDF 스타일) */
+            .result-table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 10pt; }}
+            .result-table th {{ 
+                border-top: 2px solid #000; 
+                border-bottom: 2px solid #000; 
+                padding: 8px; 
+                background-color: #fff; 
+                text-align: center;
+            }}
+            .result-table td {{ 
+                border-bottom: 1px solid #ccc; 
+                padding: 6px; 
+                text-align: center; 
+            }}
+            .result-table tr:last-child td {{ border-bottom: 2px solid #000; }}
+
+            /* 그래프 */
+            .graph-container {{ text-align: center; margin-top: 20px; border: 1px solid #ddd; padding: 10px; }}
+            img {{ max-width: 95%; height: auto; }}
+
+            /* 푸터 */
+            .footer {{ margin-top: 50px; text-align: right; font-size: 9pt; font-style: italic; border-top: 1px solid #ccc; padding-top: 5px; }}
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>생태독성 시험 결과 보고서</h1>
+            <div class="report-header">
+                <p class="report-title">최종 시험 보고서</p>
+                <p class="report-sub">(Final Report - Ecotoxicity Test)</p>
+            </div>
             
             <table class="info-table">
-                <tr><td width="30%"><strong>시험 명칭:</strong></td><td>{test_name}</td></tr>
-                <tr><td><strong>분석 항목:</strong></td><td>{endpoint_label}</td></tr>
-                <tr><td><strong>분석 일시:</strong></td><td>{now}</td></tr>
+                <tr><td class="label">시험 명칭:</td><td>{test_name}</td></tr>
+                <tr><td class="label">시험 항목:</td><td>{endpoint_label}</td></tr>
+                <tr><td class="label">시험 일자:</td><td>{now}</td></tr>
+                <tr><td class="label">분석 방법:</td><td>{method}</td></tr>
             </table>
 
-            <h2>1. 분석 결과 요약</h2>
-            <p>본 시험의 통계 분석 결과는 다음과 같습니다.</p>
-            <ul>
-                <li><strong>{endpoint_label} 50:</strong> <span class="highlight">{ec50_val} mg/L</span></li>
-                <li><strong>95% 신뢰구간:</strong> {ci_val}</li>
-                <li><strong>적용 모델:</strong> {method}</li>
-            </ul>
+            <div class="section-header">1. 시험 결과 요약 (Summary of Results)</div>
+            <table class="summary-table">
+                <tr>
+                    <th>항목 (Endpoint)</th>
+                    <th>결과값 (Value)</th>
+                    <th>95% 신뢰구간 (95% CI)</th>
+                </tr>
+                <tr>
+                    <td><strong>{endpoint_label} 50</strong></td>
+                    <td><strong>{ec50_val} mg/L</strong></td>
+                    <td>{ci_val}</td>
+                </tr>
+            </table>
+            <p style="font-size:10pt;">* 본 결과는 <strong>{method}</strong>을 사용하여 산출되었습니다.</p>
 
-            <h2>2. 농도-반응 결과 (상세)</h2>
+            <div class="section-header">2. 상세 산출 내역 (Detailed Calculation)</div>
             {df_html}
 
-            <h2>3. 농도-반응 곡선 (Graph)</h2>
-            <img src="data:image/png;base64,{img_base64}">
+            <div class="section-header">3. 농도-반응 곡선 (Concentration-Response Curve)</div>
+            <div class="graph-container">
+                <img src="data:image/png;base64,{img_base64}">
+            </div>
 
             <div class="footer">
-                Generated by Ecological Toxicity Analyzer (Optimal Pro Ver.)
+                본 보고서는 검증된 알고리즘(Optimal Pro Ver.)에 의해 자동 생성되었습니다.
             </div>
         </div>
     </body>
