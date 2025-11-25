@@ -28,7 +28,7 @@ analysis_type = st.sidebar.radio(
 )
 
 # -----------------------------------------------------------------------------
-# [ICPIN + Bootstrap] CI 산출 로직
+# [함수 1] ICPIN + Bootstrap CI 산출 로직
 # -----------------------------------------------------------------------------
 def get_icpin_values_with_ci(df_resp, endpoint, n_boot=1000):
     df_temp = df_resp.copy()
@@ -257,6 +257,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
                            family=families.Gaussian()).fit(disp=False)
             intercept, slope = model.params['const'], model.params['Log_Conc']
             r_squared = np.corrcoef(df_p['Log_Conc'], df_p['Probit'])[0,1]**2
+            grouped = df_p
 
         if r_squared < 0.6 or slope <= 0: raise ValueError("Low Fit")
 
@@ -287,7 +288,6 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
 
     # 2순위: Linear Interpolation (ICPIN)
     except Exception as e:
-        st.warning(f"Probit 모델 실패 ({e}). ICPIN + Bootstrap으로 전환합니다.")
         
         df_icpin = df.copy()
         conc_col = [c for c in df_icpin.columns if '농도' in c][0]
@@ -459,7 +459,8 @@ def run_daphnia_analysis():
             c2.metric("95% CI", ec_res['95% CI'][idx])
             c3.metric("Model", met)
             
-            st.dataframe(pd.DataFrame(ec_res).style.apply(lambda x: ['background-color: #e6f3ff']*len(x) if x[f'EC (p)']==50 else ['']*len(x), axis=1))
+            res_df = pd.DataFrame(ec_res).rename(columns={'p': f'EC (p)', 'value': 'Conc', '95% CI': '95% CI'})
+            st.dataframe(res_df.style.apply(lambda x: ['background-color: #e6f3ff']*len(x) if x[f'EC (p)']==50 else ['']*len(x), axis=1))
             plot_ec_lc_curve(pi, "24h EC", ec_res, "Immobility (%)")
 
         with t48:
@@ -472,7 +473,8 @@ def run_daphnia_analysis():
             c2.metric("95% CI", ec_res['95% CI'][idx])
             c3.metric("Model", met)
             
-            st.dataframe(pd.DataFrame(ec_res).style.apply(lambda x: ['background-color: #e6f3ff']*len(x) if x[f'EC (p)']==50 else ['']*len(x), axis=1))
+            res_df = pd.DataFrame(ec_res).rename(columns={'p': f'EC (p)', 'value': 'Conc', '95% CI': '95% CI'})
+            st.dataframe(res_df.style.apply(lambda x: ['background-color: #e6f3ff']*len(x) if x[f'EC (p)']==50 else ['']*len(x), axis=1))
             plot_ec_lc_curve(pi, "48h EC", ec_res, "Immobility (%)")
 
 # -----------------------------------------------------------------------------
@@ -516,7 +518,8 @@ def run_fish_analysis():
                     if slope_val:
                         st.info(f"📐 **96h Slope:** {slope_val:.4f}")
                 
-                st.dataframe(pd.DataFrame(ec_res).style.apply(lambda x: ['background-color: #e6f3ff']*len(x) if x[f'LC (p)']==50 else ['']*len(x), axis=1))
+                res_df = pd.DataFrame(ec_res).rename(columns={'p': f'LC (p)', 'value': 'Conc', '95% CI': '95% CI'})
+                st.dataframe(res_df.style.apply(lambda x: ['background-color: #e6f3ff']*len(x) if x[f'LC (p)']==50 else ['']*len(x), axis=1))
                 
                 y_lab = "Lethality (%)" if t == '96h' else "Response (%)"
                 title_lab = f"{t} Concentration-Lethality" if t == '96h' else f"{t} LC"
