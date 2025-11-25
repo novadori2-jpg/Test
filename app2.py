@@ -17,45 +17,6 @@ import datetime
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="생태독성 전문 분석기 (Final)", page_icon="🧬", layout="wide")
 
-# 한글 폰트 설정 (시스템에 따라 다를 수 있음, 기본 설정)
-plt.rcParams['font.family'] = 'Malgun Gothic'
-plt.rcParams['axes.unicode_minus'] = False
-
-st.title("🧬 생태독성 전문 분석기 (Optimal Pro Ver.)")
-st.markdown("""
-이 앱은 **OECD TG 201, 202, 203** 보고서 요구사항을 충족하며, **깔끔한 보고서 출력**을 지원합니다.
-1. **분석:** TSK, Probit, ICPIN+Bootstrap 자동 적용.
-2. **출력:** 11pt 폰트, 주요 결과 강조, 그래프가 포함된 **상세 보고서 다운로드**.
-""")
-st.divider()
-
-analysis_type = st.sidebar.radio(
-    "분석할 실험을 선택하세요",
-    ["🟢 조류 성장저해 (Algae)", "🦐 물벼룩 유영저해 (Daphnia)", "🐟 어류 급성독성 (Fish)"]
-)
-
-# -----------------------------------------------------------------------------
-# [REPORT] HTML 보고서 생성 함수
-# -----------------------------------------------------------------------------
-import streamlit as st
-import pandas as pd
-import numpy as np
-from scipy import stats
-import matplotlib.pyplot as plt
-import statsmodels.api as sm
-from statsmodels.genmod import families
-from scipy.stats import norm 
-from scipy.interpolate import interp1d 
-from statsmodels.formula.api import ols
-import io
-import base64
-import datetime
-
-# -----------------------------------------------------------------------------
-# [공통] 페이지 설정
-# -----------------------------------------------------------------------------
-st.set_page_config(page_title="생태독성 전문 분석기 (Final)", page_icon="🧬", layout="wide")
-
 # 한글 폰트 설정
 plt.rcParams['font.family'] = 'Malgun Gothic'
 plt.rcParams['axes.unicode_minus'] = False
@@ -199,6 +160,25 @@ def generate_html_report(test_name, endpoint_label, ec50_val, ci_val, method, df
     </html>
     """
     return html
+
+# -----------------------------------------------------------------------------
+# [이하 로직은 이전과 동일하게 유지 (ICPIN, 통계, 분석 함수들)]
+# -----------------------------------------------------------------------------
+# ... (get_icpin_values_with_ci, perform_detailed_stats, calculate_ec_lc_range, plot_ec_lc_curve, plot_growth_curves 함수들은 이전 답변의 코드를 그대로 사용) ...
+# ... (run_algae_analysis, run_daphnia_analysis, run_fish_analysis 함수 내에서 generate_html_report 호출 부분만 아래처럼 확인) ...
+
+# [예시: run_daphnia_analysis 함수 내부의 버튼 클릭 시 처리 부분]
+# ...
+# html = generate_html_report(f"물벼룩 급성 유영저해 시험 ({t_label})", "EC50", val, ci, met, res_df, fig)
+# st.download_button(f"📥 {t_label} 보고서 다운로드", html, f"Daphnia_{t_label}_Report.html")
+# ...
+
+# (전체 코드가 너무 길어지므로, 위 generate_html_report 함수를 이전 코드의 해당 위치에 덮어쓰시면 됩니다. 
+# 나머지 로직은 완벽히 동일합니다.)
+
+# -----------------------------------------------------------------------------
+# [코드의 무결성을 위해 전체 코드가 필요한 경우, 아래에 붙여넣겠습니다.]
+# -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
 # [함수 1] ICPIN + Bootstrap CI 산출 로직
