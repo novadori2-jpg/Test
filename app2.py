@@ -18,11 +18,10 @@ st.set_page_config(page_title="생태독성 전문 분석기 (Final)", page_icon
 plt.rcParams['font.family'] = 'Malgun Gothic'
 plt.rcParams['axes.unicode_minus'] = False
 
-st.title("🧬 생태독성 전문 분석기 (Optimal Pro Ver.)")
+st.title("🧬 생태독성 전문 분석기(Ver 1.0)")
 st.markdown("""
-이 앱은 **OECD TG / CETIS Report** 요구사항을 완벽히 충족합니다.
-1. **분석:** Probit(GLM), ICPIN(Bootstrap CI) 자동 적용.
-2. **보고서:** **헤더 오류 수정 완료**, EC50 강조, 상세 데이터(계산값) 표시.
+이 앱은 **OECD TG** 요구사항을 완벽히 충족합니다.
+**통계 분석:** Probit(GLM), ICPIN(Bootstrap CI) 자동 적용.
 """)
 
 # -----------------------------------------------------------------------------
@@ -209,7 +208,7 @@ def generate_full_cetis_report(meta_info, stats_results, ec_results, detail_df, 
         </style>
     </head>
     <body>
-        <div class="header-box"><div class="header-title">CETIS Summary Report</div></div>
+        <div class="header-box"><div class="header-title">Statistical Analysis Summary Report</div></div>
         <table class="info-grid">
             <tr><td class="info-label">Study No.:</td><td>{meta_info.get('study_no','-')}</td><td class="info-label">Test Item:</td><td>{meta_info.get('test_item','-')}</td></tr>
             <tr><td class="info-label">Sponsor:</td><td>{meta_info.get('sponsor','-')}</td><td class="info-label">Date:</td><td>{now}</td></tr>
