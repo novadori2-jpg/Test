@@ -379,34 +379,73 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name, return_details=False
     if return_details: return stats_details, summary
     return noec, loec, summary
 
+# -----------------------------------------------------------------------------
+# [함수 3] ECp/LCp 산출 (Probit 강제 적용 - Brown-Mazumdar 보정 추가)
+# -----------------------------------------------------------------------------
 def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=False):
     dose_resp = df.groupby('농도(mg/L)')[endpoint_col].mean().reset_index()
+    dose_resp_probit = dose_resp[dose_resp['농도(mg/L)'] > 0].copy()
     max_conc = dose_resp['농도(mg/L)'].max()
     p_values = np.arange(5, 100, 5) / 100
     ec_res = {'p': [], 'value': [], 'status': [], '95% CI': []}
+    
     if is_animal_test:
         total_mean = df.groupby('농도(mg/L)')['총 개체수'].mean()
-        dose_resp['Inhibition'] = df.groupby('농도(mg/L)')[endpoint_col].mean() / total_mean[dose_resp['농도(mg/L)']].values
+        dose_resp_probit['Inhibition'] = dose_resp_probit[endpoint_col] / total_mean[dose_resp_probit['농도(mg/L)']].values
     else:
-        dose_resp['Inhibition'] = (control_mean - dose_resp[endpoint_col]) / control_mean
+        dose_resp_probit['Inhibition'] = (control_mean - dose_resp_probit[endpoint_col]) / control_mean
+
     method_used = "Linear Interpolation (ICp)"
     plot_info = {}
+
     try:
-        if not is_animal_test: raise Exception("Algae force ICPIN")
+        if not is_animal_test: raise Exception("Algae: Force ICPIN")
+        
         df_glm = df[df['농도(mg/L)'] > 0].copy()
+        # Log 농도 변환 (0인 경우 매우 작은 값으로 대체하지 않고 제외됨)
         df_glm['Log_Conc'] = np.log10(df_glm['농도(mg/L)'])
-        grouped = df_glm.groupby('농도(mg/L)').agg(Response=(endpoint_col,'sum'), Total=('총 개체수','sum'), Log_Conc=('Log_Conc','mean')).reset_index()
-        grouped.loc[grouped['Response']==grouped['Total'], 'Response'] *= 0.999
-        grouped.loc[grouped['Response']==0, 'Response'] = grouped['Total'] * 0.001
-        if grouped['Response'].sum() <= 0: raise ValueError
-        model = sm.GLM(grouped['Response'], sm.add_constant(grouped['Log_Conc']), family=families.Binomial(), exposure=grouped['Total']).fit(disp=0)
+        
+        grouped = df_glm.groupby('농도(mg/L)').agg(
+            Response=(endpoint_col, 'sum'), Total=('총 개체수', 'sum'), Log_Conc=('Log_Conc', 'mean')
+        ).reset_index()
+        
+        # *** 중요 수정: Brown-Mazumdar Correction (GLM 수렴 유도) ***
+        # 0% -> 0.25/n, 100% -> (n-0.25)/n (조금 더 부드러운 보정)
+        # 또는 표준적인 0.5/n
+        
+        # Total 개수 가져오기
+        n = grouped['Total']
+        r = grouped['Response']
+        
+        # 0% 반응 보정
+        mask_0 = (r == 0)
+        grouped.loc[mask_0, 'Response'] = 0.5  # 0 대신 0.5마리 반응한 것으로 간주
+        
+        # 100% 반응 보정
+        mask_100 = (r == n)
+        grouped.loc[mask_100, 'Response'] = n[mask_100] - 0.5 # n 대신 n-0.5마리 반응한 것으로 간주
+        
+        # GLM Fit
+        model = sm.GLM(grouped['Response'], sm.add_constant(grouped['Log_Conc']), 
+                       family=families.Binomial(), exposure=grouped['Total']).fit(disp=0)
+        
         intercept, slope = model.params['const'], model.params['Log_Conc']
-        if slope <= 0: raise ValueError
+        
+        # 기울기 체크 (음수 기울기는 독성 데이터에서 비정상)
+        if slope <= 0: raise ValueError("Negative Slope")
+        
+        # CI Calculation (Delta Method)
         cov = model.cov_params()
         log_lc50 = -intercept/slope
         var_log = (1/slope**2)*(cov.loc['const','const'] + log_lc50**2*cov.loc['Log_Conc','Log_Conc'] + 2*log_lc50*cov.loc['const','Log_Conc'])
-        se = np.sqrt(var_log) if var_log>0 else 0
-        ci_50 = f"({10**(log_lc50-1.96*se):.4f} ~ {10**(log_lc50+1.96*se):.4f})"
+        
+        if var_log < 0: var_log = 1e-9 # 혹시 모를 음수 분산 방지
+        se = np.sqrt(var_log)
+        
+        lcl_val = 10**(log_lc50 - 1.96*se)
+        ucl_val = 10**(log_lc50 + 1.96*se)
+        ci_50 = f"({lcl_val:.4f} ~ {ucl_val:.4f})"
+
         for p in p_values:
             ecp = 10**((stats.norm.ppf(p)-intercept)/slope)
             val_s = f"{ecp:.4f}" if 0<ecp<max_conc*100 else "> Max"
@@ -414,19 +453,32 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
             ec_res['value'].append(val_s)
             ec_res['status'].append("✅ Probit")
             ec_res['95% CI'].append(ci_50 if int(p*100)==50 else "N/A")
+        
         method_used = "GLM Probit Analysis"
-        plot_info = {'type':'probit', 'x': grouped['Log_Conc'], 'y': stats.norm.ppf(grouped['Response']/grouped['Total']), 'slope':slope, 'intercept':intercept, 'x_original': grouped['농도(mg/L)'], 'y_original': grouped['Response']/grouped['Total']}
-    except:
-        ec_res = {'p': [], 'value': [], 'status': [], '95% CI': []} # *** Reset ***
+        
+        # Plot info 업데이트 (보정된 값 대신 원본 비율 사용)
+        # 그래프에는 원본 데이터(0, 1)를 찍고 곡선만 피팅된 것으로 그림
+        y_obs = df_glm.groupby('농도(mg/L)')[endpoint_col].sum() / df_glm.groupby('농도(mg/L)')['총 개체수'].sum()
+        
+        plot_info = {'type':'probit', 'x': grouped['Log_Conc'], 'y': stats.norm.ppf(np.clip(y_obs.values, 0.01, 0.99)), 
+                     'slope':slope, 'intercept':intercept, 'x_original': grouped['농도(mg/L)'], 'y_original': y_obs.values}
+
+    # ICPIN Fallback
+    except Exception as e:
+        # st.error(f"Probit Error: {e}") # 디버깅용 (필요시 주석 해제)
+        ec_res = {'p': [], 'value': [], 'status': [], '95% CI': []} # Reset
+        
         df_icpin = df.copy().rename(columns={df.columns[0]:'Concentration'})
-        conc_col = [c for c in df.columns if '농도' in c][0]
-        df_icpin = df.copy().rename(columns={conc_col: 'Concentration'})
+        conc_col = [c for c in df_icpin.columns if '농도' in c][0]
+        df_icpin = df_icpin.rename(columns={conc_col: 'Concentration'})
+        
         if is_animal_test:
             df_icpin['Value'] = 1 - (df_icpin[endpoint_col] / df_icpin['총 개체수'])
             icpin_res, _, inh = get_icpin_values_with_ci(df_icpin, 'Value', True, '총 개체수', endpoint_col)
         else:
             df_icpin['Value'] = df_icpin[endpoint_col]
             icpin_res, _, inh = get_icpin_values_with_ci(df_icpin, 'Value', False)
+            
         method_used = "Linear Interpolation (ICPIN/Bootstrap)"
         for p in p_values:
             lvl = int(p*100)
@@ -436,6 +488,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
             ec_res['status'].append("✅ Interpol")
             ec_res['95% CI'].append(r['lcl'])
         plot_info = {'type':'linear', 'x_original': sorted(df_icpin['Concentration'].unique()), 'y_original': inh}
+
     return ec_res, 0, method_used, plot_info
 
 def plot_ec_lc_curve(plot_info, label, ec_lc_results, y_label="Response (%)"):
