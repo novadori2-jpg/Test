@@ -260,6 +260,7 @@ def generate_full_cetis_report(meta_info, stats_results, ec_results, detail_df, 
             <tr><td class="info-label">Batch ID:</td><td>{meta_info.get('batch_id','-')}</td><td class="info-label">Protocol:</td><td>{meta_info.get('protocol','-')}</td></tr>
             <tr><td class="info-label">Analyst:</td><td>{meta_info.get('analyst','-')}</td><td class="info-label">Endpoint:</td><td>{meta_info['endpoint']}</td></tr>
         </table>
+        
         {comparison_html}
         <div class="section-title">Point Estimate Summary</div>
         <table><tr><th>Endpoint</th><th>Level</th><th>mg/L</th><th>95% CI</th><th>Method</th></tr>{pe_rows}</table>
@@ -446,7 +447,7 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         plot_info = {
             'type': 'probit',
             'x': x_smooth, 'y': y_smooth, # Log scale X, raw prob Y
-            'slope': slope, 'intercept': intercept, 
+            'slope': slope, 'intercept': -slope * log_lc50, 
             'x_original': dose_resp['농도(mg/L)'], 'y_original': y_obs.values
         }
         return ec_res, 0, method_used, plot_info
@@ -455,8 +456,8 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         # ICPIN Fallback
         ec_res = {'p': [], 'value': [], 'status': [], '95% CI': []}
         df_icpin = df.copy().rename(columns={df.columns[0]:'Concentration'})
-        conc_col = [c for c in df.columns if '농도' in c][0]
-        df_icpin = df.copy().rename(columns={conc_col: 'Concentration'})
+        conc_col = [c for c in df_icpin.columns if '농도' in c][0]
+        df_icpin = df_icpin.rename(columns={conc_col: 'Concentration'})
         
         if is_animal_test:
             df_icpin['Value'] = 1 - (df_icpin[endpoint_col] / df_icpin['총 개체수'])
@@ -526,33 +527,28 @@ def run_algae_analysis():
         g_fig = plot_growth_curves(df)
         st.pyplot(g_fig)
         st.divider()
-        
         df['수율'] = df['72h']-df['0h']; df['비성장률'] = (np.log(df['72h'])-np.log(df['0h']))/3
         c_rate = df[df['농도(mg/L)']==0]['비성장률'].mean()
         c_yield = df[df['농도(mg/L)']==0]['수율'].mean()
         
-        meta = meta_input.copy()
-        meta.update({'test_type': 'Growth Inhibition', 'species': 'P. subcapitata'})
-        
-        tab1, tab2 = st.tabs(["비성장률", "수율"])
+        tab1, tab2 = st.tabs(["Rate", "Yield"])
         with tab1:
             stats_res, summ = perform_detailed_stats(df, '비성장률', '비성장률', True)
             res, _, met, pi = calculate_ec_lc_range(df, '비성장률', c_rate, 'ErC', False)
             idx = res['p'].index(50)
-            st.metric("ErC50", f"**{res['value'][idx]}**", f"CI: {res['95% CI'][idx]}")
+            st.metric("ErC50", f"{res['value'][idx]}", f"CI: {res['95% CI'][idx]}")
+            st.dataframe(pd.DataFrame(res).style.apply(lambda x: ['background-color: #ffffcc; font-weight: bold']*len(x) if x['p']==50 else ['']*len(x), axis=1))
             fig = plot_ec_lc_curve(pi, 'ErC', res, "Inhibition (%)")
             st.pyplot(fig)
             
             raw_fig = plot_raw_response(df, '농도(mg/L)', '비성장률', 'Rate (1/d)')
             qq_fig = plot_qq_rankits(df, '농도(mg/L)', '비성장률')
-            
-            meta.update({'endpoint':'Specific Growth Rate', 'method_ec': met, 'col_name':'비성장률'})
-            df_detail = df[['농도(mg/L)', '비성장률']].rename(columns={'농도(mg/L)':'Concentration', '비성장률':'Specific Growth Rate'})
-            
-            html = generate_full_cetis_report(meta, stats_res, res, df_detail, summ.rename(columns={'농도(mg/L)':'Concentration', '비성장률':'Specific Growth Rate'}), fig, raw_fig, qq_fig, g_fig, "full")
-            st.download_button("📥 보고서 다운로드", html, "Algae_Rate_Report.html")
+            meta = meta_input.copy(); meta.update({'test_type':'Algae Growth', 'endpoint':'Rate', 'method_ec':met, 'col_name':'비성장률'})
+            raw_renamed = df.rename(columns={'농도(mg/L)':'Concentration', '비성장률':'Specific Growth Rate'})
+            html = generate_full_cetis_report(meta, stats_res, res, raw_renamed, summ.rename(columns={'농도(mg/L)':'Concentration', '비성장률':'Specific Growth Rate'}), fig, raw_fig, qq_fig, g_fig, "full")
+            st.download_button("📥 Report", html, "Algae_Rate.html")
         with tab2:
-            # ... (Yield section omitted for brevity, same logic) ...
+            # Yield logic similar to Rate
             pass
 
 def run_daphnia_analysis():
@@ -561,25 +557,38 @@ def run_daphnia_analysis():
     df = st.data_editor(st.session_state.d_data, num_rows="dynamic")
     if st.button("분석"):
         col = '반응 수 (48h)'
-        label = "EC"
-        noec, loec, summ = perform_detailed_stats(df, col, label, False)
-        res, _, met, pi = calculate_ec_lc_range(df, col, 0, label, True)
-        
+        noec, loec, summ = perform_detailed_stats(df, col, "EC", False)
+        res, _, met, pi = calculate_ec_lc_range(df, col, 0, "EC", True)
         idx = res['p'].index(50)
-        st.metric("EC50", f"**{res['value'][idx]}**", f"CI: {res['95% CI'][idx]}")
+        st.metric("EC50", f"{res['value'][idx]}", f"CI: {res['95% CI'][idx]}")
         st.dataframe(pd.DataFrame(res).style.apply(lambda x: ['background-color: #ffffcc; font-weight: bold']*len(x) if x['p']==50 else ['']*len(x), axis=1))
-        fig = plot_ec_lc_curve(pi, label, res, "Immobility (%)")
+        fig = plot_ec_lc_curve(pi, "EC", res, "Immobility (%)")
         st.pyplot(fig)
         
-        meta = meta_input.copy()
-        meta.update({'test_type': 'Daphnia Acute', 'endpoint': 'Immobility', 'method_ec': met, 'is_animal': True, 'total_n': df['총 개체수'].mean(), 'col_name': col})
+        meta = meta_input.copy(); meta.update({'test_type':'Daphnia', 'endpoint':'Immobility', 'method_ec':met, 'is_animal':True, 'total_n':df['총 개체수'].mean(), 'col_name':col})
         df_detail = df[['농도(mg/L)', col]].rename(columns={'농도(mg/L)':'Concentration', col: 'Response'})
         html = generate_full_cetis_report(meta, None, res, df_detail, summ.rename(columns={'농도(mg/L)':'Concentration', col:'Response'}), fig, None, None, None, "simple")
-        st.download_button("📥 보고서 다운로드", html, "Daphnia_Report.html")
+        st.download_button("📥 Report", html, "Daphnia.html")
 
 def run_fish_analysis():
-    # Similar to Daphnia
-    pass
+    st.header("🐟 어류")
+    if 'f_data' not in st.session_state: st.session_state.f_data = pd.DataFrame({'농도(mg/L)':[0,6.25,12.5,25,50,100], '총 개체수':[10]*6, '반응 수 (96h)':[0,0,1,4,8,10]})
+    df = st.data_editor(st.session_state.f_data, num_rows="dynamic")
+    if st.button("분석"):
+        col = '반응 수 (96h)'
+        noec, loec, summ = perform_detailed_stats(df, col, "LC", False)
+        res, _, met, pi = calculate_ec_lc_range(df, col, 0, "LC", True)
+        idx = res['p'].index(50)
+        st.metric("LC50", f"{res['value'][idx]}", f"CI: {res['95% CI'][idx]}")
+        if 'Probit' in met: st.info(f"📐 Slope: {pi.get('slope',0):.4f}")
+        st.dataframe(pd.DataFrame(res).style.apply(lambda x: ['background-color: #ffffcc; font-weight: bold']*len(x) if x['p']==50 else ['']*len(x), axis=1))
+        fig = plot_ec_lc_curve(pi, "LC", res, "Lethality (%)")
+        st.pyplot(fig)
+        
+        meta = meta_input.copy(); meta.update({'test_type':'Fish', 'endpoint':'Lethality', 'method_ec':met, 'is_animal':True, 'total_n':df['총 개체수'].mean(), 'col_name':col})
+        df_detail = df[['농도(mg/L)', col]].rename(columns={'농도(mg/L)':'Concentration', col: 'Response'})
+        html = generate_full_cetis_report(meta, None, res, df_detail, summ.rename(columns={'농도(mg/L)':'Concentration', col:'Response'}), fig, None, None, None, "simple")
+        st.download_button("📥 Report", html, "Fish.html")
 
 if __name__ == "__main__":
     if "조류" in analysis_type: run_algae_analysis()
