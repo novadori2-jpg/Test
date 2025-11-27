@@ -20,7 +20,8 @@ plt.rcParams['axes.unicode_minus'] = False
 
 st.title("🧬 생태독성 전문 분석기(Ver 1.0)")
 st.markdown("""
-이 앱은 **OECD TG** 요구사항을 완벽히 충족합니다.
+이 프로그램은 **OECD TG** 요구사항을 완벽히 충족합니다.
+
 **통계 분석:** Probit(GLM), ICPIN(Bootstrap CI) 자동 적용.
 """)
 
