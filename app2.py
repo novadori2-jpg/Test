@@ -18,11 +18,10 @@ st.set_page_config(page_title="생태독성 전문 분석기 (Final)", page_icon
 plt.rcParams['font.family'] = 'Malgun Gothic'
 plt.rcParams['axes.unicode_minus'] = False
 
-st.title("🧬 생태독성 전문 분석기(Ver 1.0)")
+st.title("🧬 생태독성 전문 분석기 (Ver 1.0)")
 st.markdown("""
-이 프로그램은 **OECD TG** 요구사항을 완벽히 충족합니다.
-
-**통계 분석:** Probit(GLM), ICPIN(Bootstrap CI) 자동 적용.
+This program fully meets the **OECD TG** requirements.
+**Statistical Analysis: ** Probit (GLM), automatic application of ICPIN (Bootstrap CI).
 """)
 
 # -----------------------------------------------------------------------------
