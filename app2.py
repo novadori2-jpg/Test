@@ -98,9 +98,9 @@ def plot_qq_rankits(df, x_col, y_col):
 # -----------------------------------------------------------------------------
 def generate_full_cetis_report(meta_info, stats_results, ec_results, detail_df, summary_df, dose_resp_fig, raw_resp_fig=None, qq_fig=None, growth_fig=None, report_type="full"):
     img_dr = fig_to_base64(dose_resp_fig)
-    img_raw = fig_to_base64(raw_resp_fig)
-    img_qq = fig_to_base64(qq_fig)
-    img_growth = fig_to_base64(growth_fig)
+    img_raw = fig_to_base64(raw_resp_fig) if raw_resp_fig else ""
+    img_qq = fig_to_base64(qq_fig) if qq_fig else ""
+    img_growth = fig_to_base64(growth_fig) if growth_fig else ""
     
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     term_prefix = "LC" if "Lethality" in meta_info.get('endpoint', '') else "EC"
@@ -115,9 +115,10 @@ def generate_full_cetis_report(meta_info, stats_results, ec_results, detail_df, 
             pe_rows += f"<tr style='{row_style}'><td>{meta_info['endpoint']}</td><td>{term_prefix}{p}</td><td>{val}</td><td>{ci}</td><td>{meta_info['method_ec']}</td></tr>"
 
     summ_rows = ""
+    # 컬럼명 안전 처리: 무조건 첫 번째 컬럼을 농도로 간주
+    conc_col = summary_df.columns[0]
     if 'Concentration' in summary_df.columns: conc_col = 'Concentration'
     elif '농도(mg/L)' in summary_df.columns: conc_col = '농도(mg/L)'
-    else: conc_col = summary_df.columns[0]
 
     if 0 in summary_df[conc_col].values:
         control_mean = summary_df[summary_df[conc_col]==0]['mean'].values[0]
@@ -148,14 +149,14 @@ def generate_full_cetis_report(meta_info, stats_results, ec_results, detail_df, 
 
     detail_html = ""
     try:
-        df_detail = detail_df.copy()
-        c_cols = [c for c in df_detail.columns if 'Conc' in c or '농도' in c]
-        c_col = c_cols[0] if c_cols else df_detail.columns[0]
-        v_cols = [c for c in df_detail.columns if c != c_col and 'Rep' not in c]
-        v_col = v_cols[0] if v_cols else df_detail.columns[1]
-        
-        df_detail['Rep_Num'] = df_detail.groupby(c_col).cumcount() + 1
-        pivot_df = df_detail.pivot(index=c_col, columns='Rep_Num', values=v_col)
+        c_col = detail_df.columns[0] # 첫번째는 농도
+        v_cols = [c for c in detail_df.columns if c != c_col and 'Rep' not in c]
+        v_col = v_cols[0] if v_cols else detail_df.columns[1]
+
+        # 복사본 생성하여 피벗
+        temp_detail = detail_df.copy()
+        temp_detail['Rep_Num'] = temp_detail.groupby(c_col).cumcount() + 1
+        pivot_df = temp_detail.pivot(index=c_col, columns='Rep_Num', values=v_col)
         
         detail_header = "<th>Conc-mg/L</th>" + "".join([f"<th>Rep {c}</th>" for c in pivot_df.columns])
         detail_body = ""
@@ -198,7 +199,7 @@ def generate_full_cetis_report(meta_info, stats_results, ec_results, detail_df, 
             </table>"""
 
     graphics_html = ""
-    if report_type == "full": 
+    if report_type == "full":
         graphics_html = f"""
         <div class="page-break"></div>
         <div class="section-title">Graphics</div>
@@ -224,7 +225,7 @@ def generate_full_cetis_report(meta_info, stats_results, ec_results, detail_df, 
                 </td>
             </tr>
         </table>"""
-    else: 
+    else:
         graphics_html = f"""
         <div class="section-title">Graphics - Concentration Response Curve</div>
         <div class="graph-box"><img src="data:image/png;base64,{img_dr}" style="max-width:60%; border:1px solid #ccc;"></div>
@@ -259,7 +260,6 @@ def generate_full_cetis_report(meta_info, stats_results, ec_results, detail_df, 
             <tr><td class="info-label">Batch ID:</td><td>{meta_info.get('batch_id','-')}</td><td class="info-label">Protocol:</td><td>{meta_info.get('protocol','-')}</td></tr>
             <tr><td class="info-label">Analyst:</td><td>{meta_info.get('analyst','-')}</td><td class="info-label">Endpoint:</td><td>{meta_info['endpoint']}</td></tr>
         </table>
-        
         {comparison_html}
         <div class="section-title">Point Estimate Summary</div>
         <table><tr><th>Endpoint</th><th>Level</th><th>mg/L</th><th>95% CI</th><th>Method</th></tr>{pe_rows}</table>
@@ -282,12 +282,8 @@ def get_icpin_values_with_ci(df_resp, endpoint, is_binary=False, total_col=None,
     control_val = 0
     inhibition_rates = []
     df_temp = df_resp.copy()
-    # 컬럼명 안전 변경
-    conc_col_name = None
-    if 'Concentration' in df_temp.columns: conc_col_name = 'Concentration'
-    elif '농도(mg/L)' in df_temp.columns: conc_col_name = '농도(mg/L)'
-    else: conc_col_name = df_temp.columns[0]
-    
+    # 컬럼명 안전 변경 (첫번째 컬럼을 농도로)
+    conc_col_name = df_temp.columns[0]
     df_temp = df_temp.rename(columns={conc_col_name: 'Concentration'})
     
     raw_means = df_temp.groupby('Concentration')[endpoint].mean()
@@ -379,73 +375,34 @@ def perform_detailed_stats(df, endpoint_col, endpoint_name, return_details=False
     if return_details: return stats_details, summary
     return noec, loec, summary
 
-# -----------------------------------------------------------------------------
-# [함수 3] ECp/LCp 산출 (Probit 강제 적용 - Brown-Mazumdar 보정 추가)
-# -----------------------------------------------------------------------------
 def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=False):
     dose_resp = df.groupby('농도(mg/L)')[endpoint_col].mean().reset_index()
-    dose_resp_probit = dose_resp[dose_resp['농도(mg/L)'] > 0].copy()
     max_conc = dose_resp['농도(mg/L)'].max()
     p_values = np.arange(5, 100, 5) / 100
     ec_res = {'p': [], 'value': [], 'status': [], '95% CI': []}
-    
     if is_animal_test:
         total_mean = df.groupby('농도(mg/L)')['총 개체수'].mean()
-        dose_resp_probit['Inhibition'] = dose_resp_probit[endpoint_col] / total_mean[dose_resp_probit['농도(mg/L)']].values
+        dose_resp['Inhibition'] = df.groupby('농도(mg/L)')[endpoint_col].mean() / total_mean[dose_resp['농도(mg/L)']].values
     else:
-        dose_resp_probit['Inhibition'] = (control_mean - dose_resp_probit[endpoint_col]) / control_mean
-
+        dose_resp['Inhibition'] = (control_mean - dose_resp[endpoint_col]) / control_mean
     method_used = "Linear Interpolation (ICp)"
     plot_info = {}
-
     try:
-        if not is_animal_test: raise Exception("Algae: Force ICPIN")
-        
+        if not is_animal_test: raise Exception("Algae force ICPIN")
         df_glm = df[df['농도(mg/L)'] > 0].copy()
-        # Log 농도 변환 (0인 경우 매우 작은 값으로 대체하지 않고 제외됨)
         df_glm['Log_Conc'] = np.log10(df_glm['농도(mg/L)'])
-        
-        grouped = df_glm.groupby('농도(mg/L)').agg(
-            Response=(endpoint_col, 'sum'), Total=('총 개체수', 'sum'), Log_Conc=('Log_Conc', 'mean')
-        ).reset_index()
-        
-        # *** 중요 수정: Brown-Mazumdar Correction (GLM 수렴 유도) ***
-        # 0% -> 0.25/n, 100% -> (n-0.25)/n (조금 더 부드러운 보정)
-        # 또는 표준적인 0.5/n
-        
-        # Total 개수 가져오기
-        n = grouped['Total']
-        r = grouped['Response']
-        
-        # 0% 반응 보정
-        mask_0 = (r == 0)
-        grouped.loc[mask_0, 'Response'] = 0.5  # 0 대신 0.5마리 반응한 것으로 간주
-        
-        # 100% 반응 보정
-        mask_100 = (r == n)
-        grouped.loc[mask_100, 'Response'] = n[mask_100] - 0.5 # n 대신 n-0.5마리 반응한 것으로 간주
-        
-        # GLM Fit
-        model = sm.GLM(grouped['Response'], sm.add_constant(grouped['Log_Conc']), 
-                       family=families.Binomial(), exposure=grouped['Total']).fit(disp=0)
-        
+        grouped = df_glm.groupby('농도(mg/L)').agg(Response=(endpoint_col,'sum'), Total=('총 개체수','sum'), Log_Conc=('Log_Conc','mean')).reset_index()
+        grouped.loc[grouped['Response']==grouped['Total'], 'Response'] *= 0.999
+        grouped.loc[grouped['Response']==0, 'Response'] = grouped['Total'] * 0.001
+        if grouped['Response'].sum() <= 0: raise ValueError
+        model = sm.GLM(grouped['Response'], sm.add_constant(grouped['Log_Conc']), family=families.Binomial(), exposure=grouped['Total']).fit(disp=0)
         intercept, slope = model.params['const'], model.params['Log_Conc']
-        
-        # 기울기 체크 (음수 기울기는 독성 데이터에서 비정상)
-        if slope <= 0: raise ValueError("Negative Slope")
-        
-        # CI Calculation (Delta Method)
+        if slope <= 0: raise ValueError
         cov = model.cov_params()
         log_lc50 = -intercept/slope
         var_log = (1/slope**2)*(cov.loc['const','const'] + log_lc50**2*cov.loc['Log_Conc','Log_Conc'] + 2*log_lc50*cov.loc['const','Log_Conc'])
-        
-        if var_log < 0: var_log = 1e-9 # 혹시 모를 음수 분산 방지
-        se = np.sqrt(var_log)
-        
-        lcl_val = 10**(log_lc50 - 1.96*se)
-        ucl_val = 10**(log_lc50 + 1.96*se)
-        ci_50 = f"({lcl_val:.4f} ~ {ucl_val:.4f})"
-
+        se = np.sqrt(var_log) if var_log>0 else 0
+        ci_50 = f"({10**(log_lc50-1.96*se):.4f} ~ {10**(log_lc50+1.96*se):.4f})"
         for p in p_values:
             ecp = 10**((stats.norm.ppf(p)-intercept)/slope)
             val_s = f"{ecp:.4f}" if 0<ecp<max_conc*100 else "> Max"
@@ -453,24 +410,11 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
             ec_res['value'].append(val_s)
             ec_res['status'].append("✅ Probit")
             ec_res['95% CI'].append(ci_50 if int(p*100)==50 else "N/A")
-        
         method_used = "GLM Probit Analysis"
-        
-        # Plot info 업데이트 (보정된 값 대신 원본 비율 사용)
-        # 그래프에는 원본 데이터(0, 1)를 찍고 곡선만 피팅된 것으로 그림
-        y_obs = df_glm.groupby('농도(mg/L)')[endpoint_col].sum() / df_glm.groupby('농도(mg/L)')['총 개체수'].sum()
-        
-        plot_info = {'type':'probit', 'x': grouped['Log_Conc'], 'y': stats.norm.ppf(np.clip(y_obs.values, 0.01, 0.99)), 
-                     'slope':slope, 'intercept':intercept, 'x_original': grouped['농도(mg/L)'], 'y_original': y_obs.values}
-
-    # ICPIN Fallback
-    except Exception as e:
-        # st.error(f"Probit Error: {e}") # 디버깅용 (필요시 주석 해제)
-        ec_res = {'p': [], 'value': [], 'status': [], '95% CI': []} # Reset
-        
+        plot_info = {'type':'probit', 'x': grouped['Log_Conc'], 'y': stats.norm.ppf(grouped['Response']/grouped['Total']), 'slope':slope, 'intercept':intercept, 'x_original': grouped['농도(mg/L)'], 'y_original': grouped['Response']/grouped['Total']}
+    except:
+        ec_res = {'p': [], 'value': [], 'status': [], '95% CI': []}
         df_icpin = df.copy().rename(columns={df.columns[0]:'Concentration'})
-        conc_col = [c for c in df_icpin.columns if '농도' in c][0]
-        df_icpin = df_icpin.rename(columns={conc_col: 'Concentration'})
         
         if is_animal_test:
             df_icpin['Value'] = 1 - (df_icpin[endpoint_col] / df_icpin['총 개체수'])
@@ -478,7 +422,6 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
         else:
             df_icpin['Value'] = df_icpin[endpoint_col]
             icpin_res, _, inh = get_icpin_values_with_ci(df_icpin, 'Value', False)
-            
         method_used = "Linear Interpolation (ICPIN/Bootstrap)"
         for p in p_values:
             lvl = int(p*100)
@@ -488,7 +431,6 @@ def calculate_ec_lc_range(df, endpoint_col, control_mean, label, is_animal_test=
             ec_res['status'].append("✅ Interpol")
             ec_res['95% CI'].append(r['lcl'])
         plot_info = {'type':'linear', 'x_original': sorted(df_icpin['Concentration'].unique()), 'y_original': inh}
-
     return ec_res, 0, method_used, plot_info
 
 def plot_ec_lc_curve(plot_info, label, ec_lc_results, y_label="Response (%)"):
@@ -509,29 +451,6 @@ def plot_ec_lc_curve(plot_info, label, ec_lc_results, y_label="Response (%)"):
     ax.axhline(50, color='red', linestyle=':')
     ax.set_xlabel('Concentration (mg/L)'); ax.set_ylabel(y_label)
     ax.legend(); ax.set_title(f'{label} Curve')
-    return fig
-
-def plot_raw_response(df, x_col, y_col, y_label):
-    fig, ax = plt.subplots(figsize=(6, 4))
-    summary = df.groupby(x_col)[y_col].agg(['mean', 'sem']).reset_index()
-    ax.scatter(df[x_col], df[y_col], color='orange', alpha=0.6, label='Observed', zorder=2)
-    ax.errorbar(summary[x_col], summary['mean'], yerr=summary['sem'], fmt='-o', color='red', capsize=5, label='Mean ± SE', zorder=3)
-    ax.set_xlabel("Concentration (mg/L)"); ax.set_ylabel(y_label); ax.legend(); ax.grid(True, linestyle=':', alpha=0.6)
-    return fig
-
-def plot_qq_rankits(df, x_col, y_col):
-    df_temp = df.copy()
-    df_temp['Group_Mean'] = df_temp.groupby(x_col)[y_col].transform('mean')
-    df_temp['Residuals'] = df_temp[y_col] - df_temp['Group_Mean']
-    residuals = df_temp['Residuals'].sort_values().values
-    n = len(residuals)
-    if n == 0: return None
-    rankits = stats.norm.ppf((np.arange(1, n+1) - 0.5) / n)
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.scatter(rankits, residuals, color='blue', alpha=0.7)
-    slope, intercept, r_value, _, _ = stats.linregress(rankits, residuals)
-    ax.plot(rankits, slope*rankits + intercept, 'r-', label=f'R²={r_value**2:.3f}')
-    ax.set_xlabel("Rankits"); ax.set_ylabel("Centered Untransformed (Residuals)"); ax.legend(); ax.grid(True, linestyle=':', alpha=0.6)
     return fig
 
 def plot_growth_curves(df):
