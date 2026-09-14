@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  와룡상소(臥龍上疏) - macOS launchd 등록 파일
+  매일 오전 7시, 그리고 로그인 시(RunAtLoad) 상소문 웹페이지를
+  기본 브라우저로 엽니다.
+
+  설치는 직접 이 파일을 옮기기보다 macos-setup.sh 를 실행해 주세요.
+  (macos-setup.sh 가 이 파일 안의 URL을 사용해 ~/Library/LaunchAgents 에 복사합니다.)
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.waryong.sangso</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/open</string>
+    <string>https://claude.ai/code/artifact/ae3024b3-c8f7-414d-84e2-5142463ff948</string>
+  </array>
+
+  <!-- 로그인(에이전트가 로드될 때) 즉시 한 번 실행 -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- 매일 오전 7시 -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>7</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+</dict>
+</plist>
