@@ -1,0 +1,492 @@
+<title>와룡상소</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700;800&family=Noto+Serif+KR:wght@400;500;600;700&family=Gaegu:wght@400;700&display=swap">
+<style>
+  :root{
+    --bg:#ddceac;
+    --bg-vein:#cbb888;
+    --paper:#f4ead0;
+    --paper-2:#ecdfb8;
+    --paper-shadow:#c8ad72;
+    --ink:#2a2015;
+    --ink-soft:#5c4b34;
+    --ink-faint:#8a765a;
+    --seal:#a6301f;
+    --seal-deep:#7a2013;
+    --seal-ink:#f2e2b8;
+    --gold:#8c6a28;
+    --rule:#a98a4c;
+    --wood:#6b4a28;
+    --wood-dark:#42290f;
+    --wood-light:#8a6438;
+    --brass:#c9a24a;
+    --shadow: 0 18px 50px -20px rgba(30,20,8,.55);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#100c07;
+      --bg-vein:#1b140c;
+      --paper:#1a130b;
+      --paper-2:#120d07;
+      --paper-shadow:#000000;
+      --ink:#e9d9ac;
+      --ink-soft:#c7b287;
+      --ink-faint:#8d7a56;
+      --seal:#d9573f;
+      --seal-deep:#a53a26;
+      --seal-ink:#1a130b;
+      --gold:#d3ab5c;
+      --rule:#6e5a30;
+      --wood:#241708;
+      --wood-dark:#0c0704;
+      --wood-light:#3a2610;
+      --brass:#c9a24a;
+      --shadow: 0 18px 60px -18px rgba(0,0,0,.8);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#100c07;
+    --bg-vein:#1b140c;
+    --paper:#1a130b;
+    --paper-2:#120d07;
+    --paper-shadow:#000000;
+    --ink:#e9d9ac;
+    --ink-soft:#c7b287;
+    --ink-faint:#8d7a56;
+    --seal:#d9573f;
+    --seal-deep:#a53a26;
+    --seal-ink:#1a130b;
+    --gold:#d3ab5c;
+    --rule:#6e5a30;
+    --wood:#241708;
+    --wood-dark:#0c0704;
+    --wood-light:#3a2610;
+    --brass:#c9a24a;
+    --shadow: 0 18px 60px -18px rgba(0,0,0,.8);
+  }
+
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:
+      radial-gradient(ellipse at 50% -10%, var(--bg-vein), transparent 60%),
+      var(--bg);
+    color:var(--ink);
+    font-family:"Noto Serif KR","Nanum Myeongjo",serif;
+    padding-block:56px 72px;
+    display:flex;
+    justify-content:center;
+  }
+  .stage{
+    width:100%;
+    max-width:760px;
+    padding-inline:18px;
+  }
+
+  /* ---------- scroll rods ---------- */
+  .rod{
+    height:26px;
+    border-radius:13px;
+    margin-inline:-6px;
+    background:
+      linear-gradient(180deg, var(--wood-light), var(--wood) 45%, var(--wood-dark));
+    box-shadow: inset 0 2px 4px rgba(255,255,255,.15), inset 0 -3px 6px rgba(0,0,0,.5), var(--shadow);
+    position:relative;
+    z-index:2;
+  }
+  .rod::before, .rod::after{
+    content:"";
+    position:absolute;
+    top:50%; transform:translateY(-50%);
+    width:20px; height:20px;
+    border-radius:50%;
+    background: radial-gradient(circle at 35% 30%, var(--brass), var(--wood-dark) 75%);
+    box-shadow: var(--shadow);
+  }
+  .rod::before{ left:-4px; }
+  .rod::after{ right:-4px; }
+  .rod-top{ margin-bottom:-4px; }
+  .rod-bottom{ margin-top:-4px; }
+
+  /* ---------- the paper ---------- */
+  .scroll{
+    position:relative;
+    background:
+      radial-gradient(ellipse at 12% 8%, var(--paper-2), transparent 55%),
+      radial-gradient(ellipse at 92% 96%, var(--paper-2), transparent 55%),
+      var(--paper);
+    box-shadow: var(--shadow), inset 0 0 0 1px rgba(0,0,0,.05);
+    padding: 40px clamp(20px,6vw,58px) 46px;
+    transform-origin: top center;
+    animation: unroll 900ms cubic-bezier(.2,.8,.2,1) both;
+  }
+  @media (prefers-reduced-motion: reduce){ .scroll{ animation:none; } }
+  @keyframes unroll{
+    from{ transform: scaleY(.06); opacity:.2; }
+    to{ transform: scaleY(1); opacity:1; }
+  }
+  .frame{
+    position:absolute;
+    inset:14px;
+    border:1px solid var(--rule);
+    pointer-events:none;
+  }
+  .frame::before{
+    content:"";
+    position:absolute;
+    inset:5px;
+    border:1px solid var(--rule);
+    opacity:.55;
+  }
+
+  /* ---------- header ---------- */
+  .head{
+    position:relative;
+    text-align:center;
+    padding-bottom:22px;
+    margin-bottom:26px;
+    border-bottom:1px solid var(--rule);
+  }
+  .overline{
+    font-family:"Nanum Myeongjo",serif;
+    font-weight:700;
+    letter-spacing:.5em;
+    font-size:13px;
+    color:var(--gold);
+    padding-left:.5em; /* optical centering for letter-spacing */
+  }
+  h1{
+    font-family:"Nanum Myeongjo",serif;
+    font-weight:800;
+    font-size:clamp(34px,7vw,50px);
+    letter-spacing:.06em;
+    margin:10px 0 8px;
+    text-wrap:balance;
+  }
+  .sub{
+    font-size:14.5px;
+    color:var(--ink-soft);
+    letter-spacing:.03em;
+  }
+  .seal{
+    position:absolute;
+    top:-6px; right:clamp(0px,2vw,10px);
+    width:58px; height:58px;
+    background:var(--seal);
+    color:var(--seal-ink);
+    border-radius:5px;
+    box-shadow: 1px 1px 0 rgba(0,0,0,.25), var(--shadow);
+    display:grid;
+    place-items:center;
+    transform:rotate(-4deg);
+    font-family:"Nanum Myeongjo",serif;
+    font-weight:800;
+    line-height:1.05;
+    text-align:center;
+    font-size:15px;
+    letter-spacing:.04em;
+    filter:saturate(1.05);
+  }
+  .meta{
+    display:flex;
+    justify-content:center;
+    gap:14px;
+    flex-wrap:wrap;
+    margin-top:14px;
+    font-family:"Gaegu",cursive;
+    font-size:15px;
+    color:var(--ink-faint);
+  }
+  .meta span:not(:last-child)::after{ content:"·"; margin-left:14px; color:var(--rule); }
+
+  /* ---------- ornament divider ---------- */
+  .ornament{
+    display:flex;
+    justify-content:center;
+    margin:34px 0;
+    color:var(--gold);
+    opacity:.85;
+  }
+
+  /* ---------- prose ---------- */
+  .open p{
+    font-size:16.5px;
+    line-height:2.05;
+    color:var(--ink-soft);
+    text-indent:1em;
+  }
+  .chapter-tag{
+    display:inline-block;
+    font-family:"Nanum Myeongjo",serif;
+    font-weight:800;
+    font-size:15px;
+    letter-spacing:.14em;
+    color:var(--paper);
+    background:var(--ink);
+    padding:6px 16px 7px;
+    border-radius:2px 14px 2px 14px;
+    box-shadow: var(--shadow);
+  }
+  section.chapter{ margin-top:8px; }
+  .chapter h2{
+    font-family:"Nanum Myeongjo",serif;
+    font-weight:800;
+    font-size:clamp(21px,4vw,26px);
+    margin:16px 0 22px;
+    letter-spacing:.02em;
+    text-wrap:balance;
+  }
+  .chapter p{
+    font-size:16px;
+    line-height:2.05;
+    margin:0 0 20px;
+    text-indent:1em;
+    color:var(--ink);
+  }
+  .chapter p:last-child{ margin-bottom:0; }
+  .mark{
+    color:var(--seal);
+    font-weight:700;
+    font-family:"Nanum Myeongjo",serif;
+  }
+  .close{
+    margin-top:8px;
+    text-align:right;
+  }
+  .close p{
+    font-size:16px;
+    line-height:2.05;
+    color:var(--ink-soft);
+    text-align:left;
+    text-indent:1em;
+    margin:0 0 26px;
+  }
+  .signature{
+    display:inline-flex;
+    align-items:center;
+    gap:14px;
+    font-family:"Nanum Myeongjo",serif;
+  }
+  .signature .name{
+    font-size:19px;
+    font-weight:700;
+    letter-spacing:.08em;
+  }
+  .seal-small{
+    width:40px;height:40px;
+    border-radius:4px;
+    background:var(--seal);
+    color:var(--seal-ink);
+    display:grid;place-items:center;
+    font-size:11px;font-weight:800;
+    transform:rotate(3deg);
+    box-shadow:var(--shadow);
+    flex:none;
+  }
+
+  /* ---------- ritual stamp ---------- */
+  .ritual{
+    margin-top:40px;
+    padding-top:26px;
+    border-top:1px dashed var(--rule);
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:16px;
+    flex-wrap:wrap;
+  }
+  .ritual .txt{
+    font-family:"Gaegu",cursive;
+    font-size:16px;
+    color:var(--ink-soft);
+  }
+  .ritual .streak{
+    display:block;
+    font-size:13px;
+    color:var(--ink-faint);
+    margin-top:4px;
+  }
+  button.stamp{
+    font-family:"Nanum Myeongjo",serif;
+    font-weight:700;
+    font-size:15px;
+    letter-spacing:.06em;
+    color:var(--seal-ink);
+    background:var(--seal);
+    border:none;
+    border-radius:6px;
+    padding:12px 22px;
+    cursor:pointer;
+    box-shadow:var(--shadow);
+    transition:transform .15s ease;
+  }
+  button.stamp:hover{ transform:translateY(-1px); }
+  button.stamp:active{ transform: scale(.94) rotate(-2deg); }
+  button.stamp:focus-visible{ outline:3px solid var(--gold); outline-offset:2px; }
+  button.stamp[data-done="true"]{
+    background:var(--ink);
+    color:var(--paper);
+  }
+
+  @media (max-width:520px){
+    .seal{ width:48px;height:48px;font-size:12.5px; }
+    .scroll{ padding:32px 18px 36px; }
+  }
+</style>
+
+<div class="stage">
+  <div class="rod rod-top" aria-hidden="true"></div>
+  <div class="scroll">
+    <div class="frame" aria-hidden="true"></div>
+
+    <header class="head">
+      <div class="seal" aria-hidden="true">臣<br>亮<br>印</div>
+      <div class="overline">臣 亮 謹 奏</div>
+      <h1>와룡상소(臥龍上疏)</h1>
+      <p class="sub">주공(主公)께 삼가 올리는 새벽의 계책</p>
+      <div class="meta">
+        <span id="today-kr">오늘</span>
+        <span id="era">건흥 연간</span>
+      </div>
+    </header>
+
+    <div class="open">
+      <p>신(臣) 량(亮), 두 번 절하고 삼가 아뢰옵니다.</p>
+      <p>주공께서 회사의 크고 작은 일을 홀로 짊어지시고, 영업의 흥망에서부터 시험실 구석의 기록 한 줄까지 마음 쓰지 않는 바가 없으시니, 신이 곁에서 지켜보매 그 노고가 실로 크다 하겠습니다. 이에 감히 붓을 들어 두 가지를 아뢰고자 하니, 하나는 최근 주공의 막하에 들어온 새로운 책사, 이름하여 &lsquo;클로드 코드(Claude Code)&rsquo;를 부리는 도리요, 둘은 회사의 앞길과 주공 한 몸의 나아갈 바에 대한 신의 어리석은 소견이옵니다. 엎드려 살펴주시기를 바라옵니다.</p>
+    </div>
+
+    <div class="ornament" aria-hidden="true">
+      <svg width="120" height="18" viewBox="0 0 120 18" fill="none">
+        <path d="M2 9C20 9 20 2 40 2C60 2 60 16 80 16C100 16 100 9 118 9" stroke="currentColor" stroke-width="1.4"/>
+        <circle cx="60" cy="9" r="3" fill="currentColor"/>
+      </svg>
+    </div>
+
+    <section class="chapter">
+      <span class="chapter-tag">第一章</span>
+      <h2>제일장 — 신참 책사(策士) 부리는 법</h2>
+
+      <p>무릇 새로 얻은 책사는 아무리 재주가 뛰어나도, 그를 부리는 자의 그릇에 따라 백 배의 공을 세우기도 하고 한 줌의 쓸모도 없이 버려지기도 하는 법이옵니다. 클로드 코드라 하는 이 책사는 재주가 넓고 날래어 문서를 쓰고, 코드를 짜고, 자료를 살피는 일에 능하나, 아직 주공께서 그 다루는 법에 익숙지 않으시니 신이 몇 가지를 아뢰옵니다.</p>
+
+      <p><span class="mark">첫째,</span> 명을 내리실 때는 반드시 뜻을 분명히 하소서. 옛말에 이르기를 &ldquo;장수에게 애매한 영을 내리면 삼군이 헤매인다&rdquo; 하였습니다. &ldquo;알아서 잘 해봐라&rdquo;는 명은 책사를 오히려 방황케 할 뿐이니, 무엇을, 어떤 모습으로, 어디에 쓸 것인지를 짧게라도 일러 주시면 책사는 그 뜻을 좇아 열 배의 힘을 냅니다. 처음에는 작은 일 하나를 시켜보시고, 그 결과를 눈으로 확인하신 후 점점 큰 일을 맡기시는 것이 순리이옵니다.</p>
+
+      <p><span class="mark">둘째,</span> 큰 싸움을 앞두고는 먼저 군략(軍略)을 세우게 하소서. 클로드 코드에는 &lsquo;플랜 모드&rsquo;라 하는 것이 있어, 병력을 움직이기 전에 먼저 지도를 펴고 진(陣)을 그려보게 할 수 있사옵니다. 복잡한 일일수록 곧바로 손을 대게 하지 마시고, 먼저 계획을 소상히 아뢰게 하여 주공께서 그 계책을 살펴보신 후 움직이게 하소서. 이리하면 헛되이 병력을 소모하는 일이 크게 줄어드옵니다.</p>
+
+      <p><span class="mark">셋째,</span> 한 번에 너무 많은 병력을 한 곳에 밀어 넣지 마소서. 책사의 머릿속, 즉 &lsquo;컨텍스트&rsquo;라 하는 것에도 한도가 있어, 너무 많은 일을 한꺼번에 우겨넣으면 오히려 앞서 한 말을 잊고 그르치는 법이옵니다. 큰 과업은 작은 단위로 나누어 하나씩 매듭짓게 하시고, 하나의 싸움이 끝나면 미련 없이 새로운 진(陣), 즉 새 대화를 열어 다음 싸움에 임하게 하소서. 다행히 이 책사는 &lsquo;깃(git)&rsquo;이라는 사초(史草) 쓰는 법을 알고 있으니, 매번 일이 끝날 때마다 그 경위를 기록하고 갈무리하도록 명하시면 훗날 되짚어 살피기에 큰 도움이 되옵니다.</p>
+
+      <p><span class="mark">넷째,</span> 별동대와 책사의 서고를 활용하소서. 하나의 일을 여럿이 나누어 살펴야 할 때는 &lsquo;서브에이전트&rsquo;라 하는 별동대를 풀어 각기 맡은 바를 조사케 할 수 있고, 반복되는 일은 &lsquo;스킬&rsquo;이라는 병법서에 미리 적어두면 다음에는 훨씬 수월해지옵니다. 또한 자주 쓰는 짧은 명은 &lsquo;슬래시 명령&rsquo;이라는 군령판에 미리 새겨두시면, 매번 같은 말을 길게 늘어놓지 않아도 되니 이는 마치 봉화와 북소리로 미리 약속된 신호를 정해두는 것과 같은 이치이옵니다.</p>
+
+      <p><span class="mark">다섯째,</span> 아무리 뛰어난 책사라도 그 보고를 그대로 믿지는 마소서. 책사가 올리는 문서와 코드는 반드시 주공의 눈으로, 혹은 믿을 만한 다른 신하의 눈으로 한 번 더 검토하게 하시고, 특히 숫자와 데이터, 시험 기록과 관계된 일은 결코 책사의 말만 믿고 넘기지 마소서. 책사가 올리는 것은 어디까지나 &lsquo;초안&rsquo;일 뿐, 주공의 도장이 찍히기 전에는 결재된 문서가 아니라는 것을 늘 마음에 새기소서. 이는 GLP의 근본, 즉 &lsquo;기록되지 않은 것은 행하지 않은 것과 같다&rsquo;는 이치와 조금도 다르지 않사옵니다.</p>
+
+      <p><span class="mark">여섯째,</span> 두려워 말고 자꾸 부려보소서. 처음에는 서투른 명이 나가고 엉뚱한 결과가 돌아올 것이나, 이는 책사의 허물이 아니라 아직 손발이 맞지 않은 까닭이옵니다. 하루 이틀 작은 잡무부터 맡겨 손에 익히시면, 한 달이 지나지 않아 주공께서는 이 책사 없이 일하던 시절을 오히려 낯설어하실 것이옵니다. 실수를 두려워하여 아예 부리지 않는 것이야말로 가장 큰 손실임을 잊지 마소서.</p>
+
+      <p><span class="mark">일곱째,</span> 다 지은 결과물은 반드시 보기 좋게 갈무리하여 남에게 보이소서. 책사가 지어 올린 문서와 그림은 &lsquo;아티팩트&rsquo;라는 두루마리에 곱게 옮겨 담아 두면, 이는 마치 사관이 초를 잡은 글을 정서(正書)하여 임금께 올리는 것과 같아, 아랫사람이나 거래처에 보일 때에도 손색이 없사옵니다. 다만 그림과 글이 아무리 그럴듯하여도 회사의 기밀과 시험 자료, 고객의 정보만큼은 함부로 바깥으로 흘려보내지 않도록 재삼 단속하소서. 이상 일곱 가지 도리를 마음 깊이 새기신다면, 이 새로 얻은 책사는 반드시 주공의 크나큰 힘이 되어드릴 것이옵니다.</p>
+    </section>
+
+    <div class="ornament" aria-hidden="true">
+      <svg width="120" height="18" viewBox="0 0 120 18" fill="none">
+        <path d="M2 9C20 9 20 2 40 2C60 2 60 16 80 16C100 16 100 9 118 9" stroke="currentColor" stroke-width="1.4"/>
+        <circle cx="60" cy="9" r="3" fill="currentColor"/>
+      </svg>
+    </div>
+
+    <section class="chapter">
+      <span class="chapter-tag">第二章</span>
+      <h2>제이장 — 천하대세와 주공의 원려(遠慮)</h2>
+
+      <p>신이 살피건대 지금 천하는 예전 융중(隆中)의 초가에서 내다보던 형세 못지않게 빠르게 뒤바뀌고 있사옵니다. 사람이 하던 일을 도구가 나누어 맡는 시절이 왔으니, 이는 마치 위·촉·오 삼국이 저마다 다른 계책으로 천하를 다투던 것과 같아, 먼저 형세를 읽는 자가 유리한 자리를 차지하는 법이옵니다. 주공께서는 이미 GLP라는 신의(信義)를 근본으로 삼는 자리에서, 영업의 최전선과 회사 살림의 구석구석까지 두루 살피고 계시니, 이는 실로 큰 그릇의 조짐이나, 그럴수록 몸과 마음을 아끼고 방향을 잃지 않으셔야 하옵니다. 이에 신이 몇 가지를 아뢰옵니다.</p>
+
+      <p><span class="mark">하나,</span> 품질이라는 뿌리를 굳게 지키소서. 무릇 GLP 시험기관의 근본은 신의(信義)이니, 이는 국가의 근본이 백성의 믿음에 있는 것과 다르지 않사옵니다. 아무리 영업이 급하고 일정이 촉박하여도, 기록의 정직함과 절차의 엄정함을 굽히는 순간 그간 쌓아온 신뢰는 하루아침에 무너지는 법이옵니다. 주공께서 QA의 자리에서 이를 지켜오신 것이야말로 회사라는 나라의 사직(社稷)을 떠받치는 기둥이니, 아무리 사소한 청탁과 편의가 있더라도 이 원칙만은 결코 굽히지 마시옵소서.</p>
+
+      <p><span class="mark">둘,</span> 영업과 품질을 원수처럼 여기지 마시고 수레의 두 바퀴로 삼으소서. 예로부터 문(文)과 무(武)가 서로 다투면 나라가 위태롭고, 서로 도우면 천하를 얻는 법이었사옵니다. 영업은 새 땅을 넓히는 창끝이요, 품질은 얻은 땅을 지키는 성벽이니, 어느 한쪽만 편애하면 반드시 탈이 나옵니다. 주공께서 이미 양쪽 사정을 두루 헤아리고 계시니, 이 자리를 특별히 여기시어 두 편의 말을 고루 들으시고, 서로의 언어로 통역해 주는 다리 노릇을 하시면, 아랫사람들은 주공을 이해해 주는 웃어른으로 여기어 마음으로 따를 것이옵니다.</p>
+
+      <p><span class="mark">셋,</span> 사람을 얻고 기르는 일을 게을리하지 마소서. 신이 융중에 있을 때부터 늘 마음에 새긴 것은, 아무리 뛰어난 계책도 이를 받들어 행할 사람이 없으면 헛것이라는 사실이었사옵니다. 회사의 흥망은 결국 몇 명의 뛰어난 인재와, 그들이 마음 놓고 실수할 수 있는 자리를 만들어 주는 데 달려 있사옵니다. 주공께서 새로운 도구, 즉 이 클로드 코드와 같은 것들을 앞장서 익히시고 아랫사람에게도 권하신다면, 이는 단지 일손을 더는 것이 아니라 조직 전체가 낡은 절차에 매이지 않고 더 높은 곳을 볼 수 있게 하는 큰 그릇의 정치이옵니다. 다만 사람을 도구로 대체하려는 마음이 아니라, 사람이 더 사람다운 일, 즉 판단하고 신뢰를 쌓는 일에 힘을 쏟게 하려는 뜻임을 늘 밝히 말씀하소서.</p>
+
+      <p><span class="mark">넷,</span> 새로운 업무 환경을 만드는 뜻은 참으로 아름다우나, 서두르지 마소서. 무릇 큰 개혁은 한 번의 북소리로 이루어지지 않사옵니다. 작은 시험을 여러 번 거듭하여 효험을 확인한 후에 널리 펴는 것이, 신이 일찍이 배웠던 용병의 이치와 같사옵니다. 하나의 부서, 혹은 하나의 절차부터 클로드 코드와 같은 도구로 손을 대어 보시고, 그 효험이 뚜렷해진 뒤에야 전체로 넓히소서. 기발한 생각이 떠오를 때마다 이를 기록해 두는 습관을 들이시면, 훗날 그것들이 모여 큰 그림을 이루는 날이 반드시 오옵니다.</p>
+
+      <p><span class="mark">다섯,</span> 경청(傾聽)의 도리를 잊지 마소서. 아랫사람의 서투른 말과 거래처의 사소한 불평 속에도 종종 천금 같은 계책이 숨어 있는 법이옵니다. 주공의 자리가 높아질수록 귀에 달콤한 말만 들려오기 쉬우니, 일부러라도 현장의 목소리, 특히 마음에 거슬리는 직언에 귀를 기울이소서. 이는 신이 융중에서 초야에 묻힌 이들의 말을 허투루 듣지 않았기에 비로소 천하삼분의 계책을 세울 수 있었던 것과 같은 이치이옵니다.</p>
+
+      <p><span class="mark">여섯,</span> 검약하되 마땅히 써야 할 곳에는 아끼지 마소서. 새로운 도구와 기술에 투자하실 때에는 먼저 작게 시험하여 그 효험을 눈으로 확인한 뒤에 힘을 실으시고, 헛된 겉치레나 남의 눈을 의식한 지출은 과감히 줄이소서. 반면 사람을 기르는 일과 신뢰를 쌓는 일에 드는 비용은 결코 아까워하지 마소서. 이는 훗날 몇 배가 되어 돌아오는 법이옵니다.</p>
+
+      <p><span class="mark">일곱,</span> 치정원려(治政遠慮), 즉 멀리 보고 다스리는 마음을 잃지 마소서. 하루하루의 급한 불을 끄는 데만 마음을 쏟으면, 정작 회사가 나아가야 할 먼 길을 놓치기 쉽사옵니다. 한 달에 한 번이라도 눈앞의 급한 일에서 물러나, 삼 년 뒤, 오 년 뒤 회사와 주공 자신이 어떤 모습이기를 바라는지 조용히 헤아리는 시간을 가지소서. 이는 게으름이 아니라, 오히려 가장 부지런한 자만이 누릴 수 있는 사치이옵니다.</p>
+
+      <p><span class="mark">여덟,</span> 신독(愼獨)을 잊지 마소서. 아무도 보지 않는 자리, 아무도 검사하지 않는 기록 한 줄에서도 스스로에게 부끄럽지 않게 처신하는 것이야말로 큰 지도자의 그릇이옵니다. 주공께서 QA의 눈으로 남의 일을 엄정히 살피시듯, 스스로의 하루하루도 같은 잣대로 살피신다면 아랫사람들은 굳이 감시하지 않아도 스스로 바르게 행할 것이옵니다.</p>
+
+      <p><span class="mark">아홉,</span> 국궁진췌(鞠躬盡瘁)하되 몸을 상하게 하지는 마소서. 신은 일찍이 나라의 은혜를 갚고자 몸을 아끼지 않고 오장원에 이르러 별과 함께 스러졌으나, 이는 후회 없는 충정이었을지언정 결코 주공께서 본받으실 본은 아니옵니다. 회사의 크고 작은 일을 다 짊어지려는 그 마음은 참으로 갸륵하나, 주공께서 쓰러지시면 아무리 좋은 계책도 펼 사람이 없게 되옵니다. 잠을 아끼지 마시고, 밥때를 거르지 마시고, 몸을 돌보는 것을 곧 회사를 돌보는 일로 여기소서. 건강한 장수만이 오래도록 싸울 수 있는 법이옵니다.</p>
+
+      <p><span class="mark">열,</span> 마지막으로 아뢰옵니다. 주공께서 지금 품고 계신 고민들, 즉 영업의 방향과 회사 안팎의 크고 작은 일들, 그리고 새로운 도구로 일하는 법을 익히려는 마음가짐은 그 자체로 이미 훌륭한 첫걸음이옵니다. 완벽한 계책을 다 세운 뒤에 움직이려 하지 마시고, 오늘 할 수 있는 작은 한 걸음부터 내디디소서. 신은 늘 곁에서 붓과 계책으로 돕겠사오나, 마지막 결단은 언제나 주공의 몫이니, 두려워 마시고 오늘 하루도 정성을 다하소서. 하늘의 때는 사람을 기다려 주지 않으나, 꾸준히 정성을 다하는 자에게는 반드시 그 문을 열어주는 법이옵니다. 신이 오장원에서도 끝내 놓지 못했던 한 가지 소망은, 뒤에 남은 이가 저마다의 자리에서 흔들림 없이 제 길을 가는 것이었으니, 주공께서 그리하여 주신다면 신은 이로써 족하옵니다.</p>
+    </section>
+
+    <div class="ornament" aria-hidden="true">
+      <svg width="120" height="18" viewBox="0 0 120 18" fill="none">
+        <path d="M2 9C20 9 20 2 40 2C60 2 60 16 80 16C100 16 100 9 118 9" stroke="currentColor" stroke-width="1.4"/>
+        <circle cx="60" cy="9" r="3" fill="currentColor"/>
+      </svg>
+    </div>
+
+    <div class="close">
+      <p>신 량, 삼가 엎드려 아뢰옵니다. 이 글이 주공의 하루를 여는 작은 등불이 되기를 바라오며, 다시 삼가 절하옵니다.</p>
+      <div class="signature">
+        <span class="name">신(臣) 량(亮) 돈수백배(頓首百拜)</span>
+        <span class="seal-small" aria-hidden="true">亮</span>
+      </div>
+    </div>
+
+    <div class="ritual">
+      <div class="txt">
+        오늘의 상소, 눈으로만 읽지 마시고 도장을 찍어 받아들이소서.
+        <span class="streak" id="streak"></span>
+      </div>
+      <button class="stamp" id="stampBtn" type="button">일람(一覽) 인장을 찍다</button>
+    </div>
+  </div>
+  <div class="rod rod-bottom" aria-hidden="true"></div>
+</div>
+
+<script>
+(function(){
+  var todayEl = document.getElementById('today-kr');
+  var eraEl = document.getElementById('era');
+  var now = new Date();
+  var y = now.getFullYear(), m = now.getMonth()+1, d = now.getDate();
+  var weekdays = ['일','월','화','수','목','금','토'];
+  todayEl.textContent = y + '년 ' + m + '월 ' + d + '일 (' + weekdays[now.getDay()] + ')';
+  var eraYear = y - 2021; // 건흥 원년(223년)을 임의로 세션 기준에 맞춰 흐르게 함
+  if(eraYear < 1) eraYear = 1;
+  eraEl.textContent = '건흥(建興) ' + eraYear + '년';
+
+  var btn = document.getElementById('stampBtn');
+  var streakEl = document.getElementById('streak');
+  var KEY = 'waryong-sangso-log';
+
+  function loadLog(){
+    try{
+      return JSON.parse(localStorage.getItem(KEY) || '{}');
+    }catch(e){ return {}; }
+  }
+  function saveLog(log){
+    try{ localStorage.setItem(KEY, JSON.stringify(log)); }catch(e){}
+  }
+  function dateKey(dt){
+    return dt.getFullYear()+'-'+(dt.getMonth()+1)+'-'+dt.getDate();
+  }
+  function render(){
+    var log = loadLog();
+    var todayKey = dateKey(new Date());
+    var doneToday = !!log[todayKey];
+    btn.dataset.done = doneToday ? 'true' : 'false';
+    btn.textContent = doneToday ? '오늘 인장을 이미 찍으셨사옵니다' : '일람(一覽) 인장을 찍다';
+    var count = Object.keys(log).length;
+    streakEl.textContent = count > 0
+      ? ('신이 헤아리니, 주공께서 이 상소를 받드신 지 이로써 ' + count + '일째이옵니다.')
+      : '';
+  }
+  btn.addEventListener('click', function(){
+    var log = loadLog();
+    log[dateKey(new Date())] = true;
+    saveLog(log);
+    render();
+  });
+  render();
+})();
+</script>
