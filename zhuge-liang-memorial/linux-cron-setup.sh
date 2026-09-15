@@ -4,7 +4,7 @@
 
 set -e
 
-URL="https://claude.ai/code/artifact/ae3024b3-c8f7-414d-84e2-5142463ff948"
+URL="https://claude.ai/artifact/NWYuVYrc7PpLkodXc4ugYP"
 
 # 어떤 명령으로 브라우저를 열지 결정 (xdg-open 을 우선 사용)
 if command -v xdg-open >/dev/null 2>&1; then
