@@ -17,7 +17,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>/usr/bin/open</string>
-    <string>https://claude.ai/code/artifact/ae3024b3-c8f7-414d-84e2-5142463ff948</string>
+    <string>https://claude.ai/artifact/NWYuVYrc7PpLkodXc4ugYP</string>
   </array>
 
   <!-- 로그인(에이전트가 로드될 때) 즉시 한 번 실행 -->

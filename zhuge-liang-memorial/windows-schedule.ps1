@@ -5,12 +5,14 @@
 #   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 #   .\windows-schedule.ps1
 
-$Url = "https://claude.ai/code/artifact/ae3024b3-c8f7-414d-84e2-5142463ff948"
+$Url = "https://claude.ai/artifact/NWYuVYrc7PpLkodXc4ugYP"
 $TaskNameDaily = "와룡상소-매일7시"
 $TaskNameLogon = "와룡상소-로그온시"
 
-# 기본 브라우저로 URL을 여는 명령 (start 는 등록 기본 프로토콜 핸들러를 사용)
-$Action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c start `"`" `"$Url`""
+# 기본 브라우저로 URL을 여는 명령 (rundll32 방식 — cmd/start의 따옴표 이슈가 없어 더 안정적)
+Get-ScheduledTask -TaskName $TaskNameDaily -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
+Get-ScheduledTask -TaskName $TaskNameLogon -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
+$Action = New-ScheduledTaskAction -Execute "rundll32.exe" -Argument "url.dll,FileProtocolHandler $Url"
 
 # 1) 매일 오전 7시
 $TriggerDaily = New-ScheduledTaskTrigger -Daily -At 7:00AM
